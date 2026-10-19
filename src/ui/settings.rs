@@ -1,12 +1,14 @@
-//! Settings page. Saving writes the config file and tells the recorder to
-//! reload it.
+//! Settings, laid out like Windows 11 Settings: grouped cards with the
+//! setting's name and description on the left and its control on the right.
+//! A save bar appears only when something changed.
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, CornerRadius, Margin, RichText, Stroke};
 
 use super::Shared;
+use super::theme::{self, Tokens, icon};
 use crate::config::{Codec, Config, RateControl, Resolution};
 
-/// What the Updates section shows.
+/// What the Updates card shows.
 #[derive(Clone)]
 pub enum UpdateState {
     Idle,
@@ -28,10 +30,10 @@ pub struct SettingsPage {
 }
 
 const FPS: [u32; 5] = [30, 60, 120, 144, 240];
+const COMBO_W: f32 = 220.0;
 
 impl SettingsPage {
     pub fn new(cfg: &Config) -> Self {
-        let encoders = crate::sys::available_codecs();
         Self {
             update: match crate::update::staged() {
                 Some(s) => UpdateState::Ready(s.version),
@@ -42,297 +44,324 @@ impl SettingsPage {
             exclude_text: cfg.detection.exclude.join("\n"),
             password: String::new(),
             mics: crate::sys::list_microphones(),
-            encoders,
+            encoders: crate::sys::available_codecs(),
         }
-    }
-
-    fn section(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-        ui.add_space(10.0);
-        ui.label(RichText::new(title).strong().size(16.0));
-        ui.separator();
-        egui::Grid::new(title).num_columns(2).spacing([24.0, 8.0]).show(ui, body);
     }
 
     /// Returns true when the clips folder changed (the list must rescan).
     pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared) -> bool {
+        let t = theme::tokens(ui.ctx());
+        let icons = shared.icons;
         let mut folder_changed = false;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_max_width(760.0);
-            let d = &mut self.draft;
+        let dirty = self.dirty(&shared.cfg);
 
-            Self::section(ui, "Recording", |ui| {
-                ui.label("Replay length");
-                ui.add(egui::Slider::new(&mut d.replay_seconds, 15..=1200).suffix(" s").logarithmic(true));
-                ui.end_row();
-
-                ui.label("Clips folder");
-                ui.horizontal(|ui| {
-                    let mut text = d.output_dir.to_string_lossy().into_owned();
-                    if ui.add(egui::TextEdit::singleline(&mut text).desired_width(360.0)).changed() {
-                        d.output_dir = text.into();
-                    }
-                    if ui.button("Browse...").clicked()
-                        && let Some(p) = crate::sys::shell::pick_folder()
-                    {
-                        d.output_dir = p;
-                    }
-                });
-                ui.end_row();
-
-                ui.label("Video codec");
-                egui::ComboBox::from_id_salt("codec").selected_text(d.video.codec.label()).show_ui(ui, |ui| {
-                    for (c, ok) in &self.encoders {
-                        let label = if *ok { c.label().to_string() } else { format!("{} (no hardware encoder)", c.label()) };
-                        ui.add_enabled_ui(*ok, |ui| ui.selectable_value(&mut d.video.codec, *c, label));
-                    }
-                });
-                ui.end_row();
-
-                ui.label("Frame rate");
-                egui::ComboBox::from_id_salt("fps").selected_text(format!("{} fps", d.video.fps)).show_ui(ui, |ui| {
-                    for f in FPS {
-                        ui.selectable_value(&mut d.video.fps, f, format!("{f} fps"));
-                    }
-                });
-                ui.end_row();
-
-                ui.label("Resolution");
-                egui::ComboBox::from_id_salt("res").selected_text(d.video.resolution.label()).show_ui(ui, |ui| {
-                    for r in Resolution::ALL {
-                        ui.selectable_value(&mut d.video.resolution, r, r.label());
-                    }
-                });
-                ui.end_row();
-
-                ui.label("Bitrate");
-                let mut mbps = d.video.bitrate_kbps / 1000;
-                if ui.add(egui::Slider::new(&mut mbps, 5..=150).suffix(" Mbit/s")).changed() {
-                    d.video.bitrate_kbps = mbps * 1000;
-                }
-                ui.end_row();
-
-                ui.label("Rate control");
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut d.video.rate_control, RateControl::Vbr, "Variable (better quality)");
-                    ui.radio_value(&mut d.video.rate_control, RateControl::Cbr, "Constant");
-                });
-                ui.end_row();
-
-                ui.label("Mouse cursor");
-                ui.checkbox(&mut d.video.capture_cursor, "Show the cursor in clips");
-                ui.end_row();
-
-                let mb = (u64::from(d.video.peak_kbps() + 2 * d.audio.bitrate_kbps) * 1000 / 8) * u64::from(d.replay_seconds + 2) / 1_000_000;
-                ui.label("");
-                ui.label(RichText::new(format!("Uses up to about {mb} MB of RAM for each game being recorded.")).weak());
-                ui.end_row();
-            });
-
-            Self::section(ui, "Audio", |ui| {
-                ui.label("Game audio");
-                ui.checkbox(&mut d.audio.game_audio, "Record only the game's own sound");
-                ui.end_row();
-
-                ui.label("Microphone");
-                ui.checkbox(&mut d.audio.microphone, "Record the microphone on its own track");
-                ui.end_row();
-
-                ui.label("Microphone device");
-                let current = self.mics.iter().find(|(id, _)| *id == d.audio.microphone_device).map(|(_, n)| n.clone()).unwrap_or_else(|| "Windows default".into());
-                egui::ComboBox::from_id_salt("mic").selected_text(current).width(320.0).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut d.audio.microphone_device, String::new(), "Windows default");
-                    for (id, name) in &self.mics {
-                        ui.selectable_value(&mut d.audio.microphone_device, id.clone(), name);
-                    }
-                });
-                ui.end_row();
-
-                ui.label("Mixed track");
-                ui.checkbox(&mut d.audio.mixed_track, "Add a first track with game and mic together (for Discord and web players)");
-                ui.end_row();
-
-                ui.label("Game volume in mix");
-                ui.add(egui::Slider::new(&mut d.audio.game_volume, 0..=200).suffix("%"));
-                ui.end_row();
-
-                ui.label("Mic volume in mix");
-                ui.add(egui::Slider::new(&mut d.audio.microphone_volume, 0..=200).suffix("%"));
-                ui.end_row();
-
-                ui.label("Audio bitrate");
-                egui::ComboBox::from_id_salt("abr").selected_text(format!("{} kbit/s", d.audio.bitrate_kbps)).show_ui(ui, |ui| {
-                    for b in [96, 128, 160, 192] {
-                        ui.selectable_value(&mut d.audio.bitrate_kbps, b, format!("{b} kbit/s"));
-                    }
-                });
-                ui.end_row();
-            });
-
-            Self::section(ui, "Hotkeys", |ui| {
-                for (label, value) in [
-                    ("Save replay of the game in front", &mut d.hotkeys.save_focused),
-                    ("Save replays of all games", &mut d.hotkeys.save_all),
-                    ("Mark or unmark the app in front as a game", &mut d.hotkeys.toggle_game),
-                ] {
-                    ui.label(label);
-                    ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(value).desired_width(180.0));
-                        match crate::hotkey::parse(value) {
-                            Ok(_) => ui.label(RichText::new("OK").color(Color32::from_rgb(0x4c, 0xaf, 0x50))),
-                            Err(e) => ui.label(RichText::new(e).color(Color32::from_rgb(0xef, 0x53, 0x50))),
-                        };
-                    });
-                    ui.end_row();
-                }
-                ui.label("");
-                ui.label(
-                    RichText::new("Examples: Alt+F10, Ctrl+Shift+S, F9. If the NVIDIA app uses the same keys, turn off its Instant Replay.")
-                        .weak(),
-                );
-                ui.end_row();
-            });
-
-            Self::section(ui, "Game detection", |ui| {
-                ui.label("Automatic");
-                ui.checkbox(&mut d.detection.enabled, "Find games on their own (launchers, game folders, Windows Game Bar list)");
-                ui.end_row();
-                ui.label("Fullscreen apps");
-                ui.checkbox(&mut d.detection.fullscreen_apps, "Also record other 3D apps that fill the screen");
-                ui.end_row();
-                ui.label("Always record");
-                ui.vertical(|ui| {
-                    ui.add(egui::TextEdit::multiline(&mut self.include_text).desired_rows(3).desired_width(360.0).hint_text("game.exe (one per line)"));
-                    if ui.button("Add a program...").clicked()
-                        && let Some(p) = crate::sys::shell::pick_exe()
-                        && let Some(name) = p.file_name()
-                    {
-                        if !self.include_text.is_empty() && !self.include_text.ends_with('\n') {
-                            self.include_text.push('\n');
-                        }
-                        self.include_text.push_str(&name.to_string_lossy().to_ascii_lowercase());
-                    }
-                });
-                ui.end_row();
-                ui.label("Never record");
-                ui.add(egui::TextEdit::multiline(&mut self.exclude_text).desired_rows(3).desired_width(360.0).hint_text("app.exe (one per line)"));
-                ui.end_row();
-            });
-
-            Self::section(ui, "Sharing", |ui| {
-                ui.label("Streamable email");
-                ui.add(egui::TextEdit::singleline(&mut d.share.streamable_email).desired_width(280.0));
-                ui.end_row();
-                ui.label("Streamable password");
-                let hint = if d.share.streamable_password_protected.is_empty() { "" } else { "saved (type to replace)" };
-                ui.add(egui::TextEdit::singleline(&mut self.password).password(true).desired_width(280.0).hint_text(hint));
-                ui.end_row();
-                ui.label("");
-                ui.label(RichText::new("The password is encrypted for your Windows account (DPAPI) and only sent to Streamable.").weak());
-                ui.end_row();
-                ui.label("Auto-upload");
-                ui.checkbox(&mut d.share.auto_upload, "Upload every saved replay to Streamable");
-                ui.end_row();
-                ui.label("Link");
-                ui.checkbox(&mut d.share.copy_link_after_upload, "Copy the link after an upload");
-                ui.end_row();
-            });
-
-            Self::section(ui, "Updates", |ui| {
-                ui.label("Automatic");
-                ui.checkbox(&mut d.updates.auto_check, "Check for a new version once a day and download it in the background");
-                ui.end_row();
-                ui.label("Version");
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(format!("{} ({})", crate::update::CURRENT, crate::sys::PLATFORM));
-                    match self.update.clone() {
-                        UpdateState::Checking => {
-                            ui.spinner();
-                            ui.label("Checking...");
-                        }
-                        UpdateState::Ready(v) => {
-                            ui.label(RichText::new(format!("Version {v} is downloaded.")).color(Color32::from_rgb(0x4c, 0xaf, 0x50)));
-                            if ui.button("Restart to update").clicked() {
-                                restart_to_update(ui.ctx(), shared);
-                            }
-                        }
-                        UpdateState::Available { version, page, why } => {
-                            ui.label(format!("Version {version} is available. {why}"));
-                            if ui.button("Open the download page").clicked() {
-                                crate::sys::shell::open_url(&page);
-                            }
-                        }
-                        state => {
-                            if let UpdateState::UpToDate = state {
-                                ui.label(RichText::new("You have the latest version.").weak());
-                            }
-                            if let UpdateState::Failed(e) = &state {
-                                ui.label(RichText::new(e).color(Color32::from_rgb(0xef, 0x53, 0x50)));
-                            }
-                            if ui.button("Check for updates").clicked() {
-                                self.update = UpdateState::Checking;
-                                shared.spawn_job(ui.ctx(), super::JobKind::Update, "Checking for updates".into(), |p| {
-                                    let r = (|| -> Result<UpdateState, String> {
-                                        let Some(rel) = crate::update::check()? else { return Ok(UpdateState::UpToDate) };
-                                        if let Err(why) = crate::update::can_self_update() {
-                                            return Ok(UpdateState::Available { version: rel.version, page: rel.page, why });
-                                        }
-                                        let s = crate::update::download(&rel, &|a, b| p(a as f32 / b.max(1) as f32))?;
-                                        crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::UpdateStaged);
-                                        Ok(UpdateState::Ready(s.version))
-                                    })();
-                                    super::JobDone::Update(r.unwrap_or_else(UpdateState::Failed))
-                                });
-                            }
-                        }
-                    }
-                });
-                ui.end_row();
-            });
-
-            Self::section(ui, "General", |ui| {
-                ui.label("Notifications");
-                ui.checkbox(&mut d.notify, "Show a message when a replay is saved");
-                ui.end_row();
-                ui.label("Sound");
-                ui.checkbox(&mut d.sound, "Play a sound when a replay is saved");
-                ui.end_row();
-                ui.label("Startup");
-                ui.checkbox(&mut d.start_with_windows, "Start Replay with Windows");
-                ui.end_row();
-            });
-
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
-                let dirty = self.dirty(&shared.cfg);
-                if ui.add_enabled(dirty, egui::Button::new(RichText::new("Save settings").strong())).clicked() {
-                    folder_changed = self.save(shared);
-                }
-                if ui.add_enabled(dirty, egui::Button::new("Undo changes")).clicked() {
-                    *self = Self { mics: std::mem::take(&mut self.mics), ..Self::new(&shared.cfg) };
-                }
-                if dirty {
-                    ui.label(RichText::new("Unsaved changes").color(Color32::from_rgb(0xff, 0x98, 0x00)));
-                }
-            });
-            ui.label(RichText::new("Changes to video or audio settings restart the recording, so current buffers start again.").weak());
-            ui.add_space(20.0);
+        ui.label(theme::title("Settings").color(t.text));
+        ui.add_space(8.0);
+        let bar_h = if dirty { 64.0 } else { 0.0 };
+        let scroll_h = (ui.available_height() - bar_h).max(100.0);
+        egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(scroll_h).show(ui, |ui| {
+            ui.set_max_width(980.0);
+            ui.spacing_mut().item_spacing.y = 4.0;
+            self.recording(ui, &t, icons);
+            self.audio(ui, &t, icons);
+            self.hotkeys(ui, &t, icons);
+            self.detection(ui, &t, icons);
+            self.sharing(ui, &t, icons, shared);
+            self.updates(ui, &t, icons, shared);
+            self.general(ui, &t, icons);
+            ui.add_space(24.0);
         });
+
+        if dirty {
+            ui.add_space(8.0);
+            egui::Frame::new()
+                .fill(t.card)
+                .stroke(Stroke::new(1.0, t.card_stroke))
+                .corner_radius(CornerRadius::same(theme::R_CARD))
+                .inner_margin(Margin::symmetric(16, 10))
+                .show(ui, |ui| {
+                    ui.set_max_width(980.0 - 32.0);
+                    ui.horizontal(|ui| {
+                        if icons {
+                            ui.label(theme::glyph(icon::INFO, 16.0).color(t.accent));
+                        }
+                        ui.label(RichText::new("You have unsaved changes.").color(t.text));
+                        ui.label(theme::caption("Video and audio changes restart recording, so the replay buffers start again.").color(t.text2));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if theme::button(ui, "Discard", true).clicked() {
+                                *self = Self { mics: std::mem::take(&mut self.mics), encoders: std::mem::take(&mut self.encoders), ..Self::new(&shared.cfg) };
+                            }
+                            if theme::primary(ui, &t, theme::label_with_icon(icons, icon::SAVE, "Save"), true).clicked() {
+                                folder_changed = self.save(shared);
+                            }
+                        });
+                    });
+                });
+        }
         folder_changed
+    }
+
+    fn recording(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
+        let d = &mut self.draft;
+        theme::section(ui, t, "Recording");
+        theme::setting(ui, t, icons, Some(icon::CLOCK), "Replay length", "How much recent gameplay a saved clip contains", |ui| {
+            ui.label(RichText::new(theme::fmt_short(f64::from(d.replay_seconds))).color(t.text2));
+            ui.spacing_mut().slider_width = 220.0;
+            ui.add(egui::Slider::new(&mut d.replay_seconds, 15..=1200).logarithmic(true).show_value(false));
+        });
+        let folder = d.output_dir.display().to_string();
+        theme::setting(ui, t, icons, Some(icon::FOLDER), "Clips folder", &folder, |ui| {
+            if theme::button(ui, "Change...", true).clicked()
+                && let Some(p) = crate::sys::shell::pick_folder()
+            {
+                d.output_dir = p;
+            }
+        });
+        let encoders = self.encoders.clone();
+        theme::setting(ui, t, icons, Some(icon::VIDEO), "Video codec", "AV1 makes the smallest files; H.264 plays everywhere", |ui| {
+            egui::ComboBox::from_id_salt("codec").width(COMBO_W).selected_text(d.video.codec.label()).show_ui(ui, |ui| {
+                for (c, ok) in &encoders {
+                    let label = if *ok { c.label().to_string() } else { format!("{} (no hardware encoder)", c.label()) };
+                    ui.add_enabled_ui(*ok, |ui| ui.selectable_value(&mut d.video.codec, *c, label));
+                }
+            });
+        });
+        theme::setting(ui, t, icons, None, "Frame rate", "Frames per second in saved clips", |ui| {
+            egui::ComboBox::from_id_salt("fps").width(COMBO_W).selected_text(format!("{} fps", d.video.fps)).show_ui(ui, |ui| {
+                for f in FPS {
+                    ui.selectable_value(&mut d.video.fps, f, format!("{f} fps"));
+                }
+            });
+        });
+        theme::setting(ui, t, icons, None, "Resolution", "Clips are never scaled up", |ui| {
+            egui::ComboBox::from_id_salt("res").width(COMBO_W).selected_text(d.video.resolution.label()).show_ui(ui, |ui| {
+                for r in Resolution::ALL {
+                    ui.selectable_value(&mut d.video.resolution, r, r.label());
+                }
+            });
+        });
+        let mb = (u64::from(d.video.bitrate_kbps + 2 * d.audio.bitrate_kbps) * 1000 / 8) * u64::from(d.replay_seconds + 2) / 1_000_000;
+        theme::setting(ui, t, icons, None, "Quality", &format!("Higher is sharper. About {mb} MB of memory per game being recorded"), |ui| {
+            let mut mbps = d.video.bitrate_kbps / 1000;
+            ui.label(RichText::new(format!("{mbps} Mbit/s")).color(t.text2));
+            ui.spacing_mut().slider_width = 220.0;
+            if ui.add(egui::Slider::new(&mut mbps, 5..=150).show_value(false)).changed() {
+                d.video.bitrate_kbps = mbps * 1000;
+            }
+        });
+        theme::setting(ui, t, icons, None, "Rate control", "Variable gives better quality for the same size", |ui| {
+            let label = if d.video.rate_control == RateControl::Vbr { "Variable" } else { "Constant" };
+            egui::ComboBox::from_id_salt("rc").width(COMBO_W).selected_text(label).show_ui(ui, |ui| {
+                ui.selectable_value(&mut d.video.rate_control, RateControl::Vbr, "Variable");
+                ui.selectable_value(&mut d.video.rate_control, RateControl::Cbr, "Constant");
+            });
+        });
+        theme::setting(ui, t, icons, None, "Show the mouse cursor", "Draw the pointer into clips", |ui| {
+            theme::toggle(ui, t, &mut d.video.capture_cursor);
+        });
+    }
+
+    fn audio(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
+        let d = &mut self.draft;
+        theme::section(ui, t, "Audio");
+        theme::setting(ui, t, icons, Some(icon::GAME), "Game audio", "Record only the game's own sound, not chat or music", |ui| {
+            theme::toggle(ui, t, &mut d.audio.game_audio);
+        });
+        theme::setting(ui, t, icons, Some(icon::MIC), "Microphone", "Record your voice on its own track", |ui| {
+            theme::toggle(ui, t, &mut d.audio.microphone);
+        });
+        let mics = self.mics.clone();
+        theme::setting(ui, t, icons, None, "Microphone device", "", |ui| {
+            let current = mics.iter().find(|(id, _)| *id == d.audio.microphone_device).map(|(_, n)| n.clone()).unwrap_or_else(|| "System default".into());
+            egui::ComboBox::from_id_salt("mic").width(300.0).selected_text(current).show_ui(ui, |ui| {
+                ui.selectable_value(&mut d.audio.microphone_device, String::new(), "System default");
+                for (id, name) in &mics {
+                    ui.selectable_value(&mut d.audio.microphone_device, id.clone(), name);
+                }
+            });
+        });
+        theme::setting(ui, t, icons, Some(icon::VOLUME), "Mixed track", "Add game and mic together as the first track, so Discord and web players hear both", |ui| {
+            theme::toggle(ui, t, &mut d.audio.mixed_track);
+        });
+        for (label, v) in [("Game volume in the mix", &mut d.audio.game_volume), ("Mic volume in the mix", &mut d.audio.microphone_volume)] {
+            theme::setting(ui, t, icons, None, label, "", |ui| {
+                ui.label(RichText::new(format!("{v}%")).color(t.text2));
+                ui.spacing_mut().slider_width = 220.0;
+                ui.add(egui::Slider::new(v, 0..=200).show_value(false));
+            });
+        }
+        theme::setting(ui, t, icons, None, "Audio quality", "AAC bitrate", |ui| {
+            egui::ComboBox::from_id_salt("abr").width(COMBO_W).selected_text(format!("{} kbit/s", d.audio.bitrate_kbps)).show_ui(ui, |ui| {
+                for b in [96, 128, 160, 192] {
+                    ui.selectable_value(&mut d.audio.bitrate_kbps, b, format!("{b} kbit/s"));
+                }
+            });
+        });
+    }
+
+    fn hotkeys(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
+        let d = &mut self.draft;
+        theme::section(ui, t, "Hotkeys");
+        for (label, desc, value) in [
+            ("Save a replay", "Saves the game in front", &mut d.hotkeys.save_focused),
+            ("Save all games", "Saves every game being recorded", &mut d.hotkeys.save_all),
+            ("Mark as game", "Starts or stops recording the app in front", &mut d.hotkeys.toggle_game),
+        ] {
+            theme::setting(ui, t, icons, Some(icon::KEYBOARD), label, desc, |ui| {
+                let ok = crate::hotkey::parse(value);
+                ui.add(egui::TextEdit::singleline(value).desired_width(180.0).margin(Margin::symmetric(10, 7)));
+                match ok {
+                    Ok(_) => {
+                        if icons {
+                            ui.label(theme::glyph(icon::CHECK, 14.0).color(t.success));
+                        }
+                    }
+                    Err(e) => {
+                        ui.label(theme::caption(e).color(t.critical));
+                    }
+                }
+            });
+        }
+        ui.label(theme::caption("Examples: Alt+F10, Ctrl+Shift+S, F9. If the NVIDIA app uses the same keys, turn off its Instant Replay.").color(t.text3));
+    }
+
+    fn detection(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
+        let d = &mut self.draft;
+        theme::section(ui, t, "Game detection");
+        theme::setting(ui, t, icons, Some(icon::GAME), "Find games automatically", "Games from launchers, game folders and the Windows Game Bar list", |ui| {
+            theme::toggle(ui, t, &mut d.detection.enabled);
+        });
+        theme::setting(ui, t, icons, None, "Fullscreen apps", "Also record other 3D apps that fill a whole screen", |ui| {
+            theme::toggle(ui, t, &mut d.detection.fullscreen_apps);
+        });
+        let (inc, exc) = (&mut self.include_text, &mut self.exclude_text);
+        theme::setting_frame(t).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.columns(2, |cols| {
+                cols[0].label(RichText::new("Always record").color(t.text));
+                cols[0].label(theme::caption("Program names, one per line").color(t.text2));
+                cols[0].add(egui::TextEdit::multiline(inc).desired_rows(3).desired_width(f32::INFINITY).hint_text("game.exe"));
+                if cols[0].add(egui::Button::new("Add a program...")).clicked()
+                    && let Some(p) = crate::sys::shell::pick_exe()
+                    && let Some(name) = p.file_name()
+                {
+                    if !inc.is_empty() && !inc.ends_with('\n') {
+                        inc.push('\n');
+                    }
+                    inc.push_str(&name.to_string_lossy().to_ascii_lowercase());
+                }
+                cols[1].label(RichText::new("Never record").color(t.text));
+                cols[1].label(theme::caption("Program names, one per line").color(t.text2));
+                cols[1].add(egui::TextEdit::multiline(exc).desired_rows(3).desired_width(f32::INFINITY).hint_text("app.exe"));
+            });
+        });
+    }
+
+    fn sharing(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &Shared) {
+        let d = &mut self.draft;
+        theme::section(ui, t, "Sharing");
+        theme::setting(ui, t, icons, Some(icon::SHARE), "Streamable email", "Used to upload clips to your Streamable account", |ui| {
+            ui.add(egui::TextEdit::singleline(&mut d.share.streamable_email).desired_width(260.0).margin(Margin::symmetric(10, 7)));
+        });
+        let saved = !shared.cfg.share.streamable_password_protected.is_empty();
+        let hint = if saved { "Saved. Type to replace it" } else { "" };
+        theme::setting(ui, t, icons, None, "Streamable password", "Stored encrypted for your user account, and sent only to Streamable", |ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.password).password(true).hint_text(hint).desired_width(260.0).margin(Margin::symmetric(10, 7)));
+        });
+        theme::setting(ui, t, icons, Some(icon::UPLOAD), "Upload every replay", "Send each saved clip to Streamable automatically", |ui| {
+            theme::toggle(ui, t, &mut d.share.auto_upload);
+        });
+        theme::setting(ui, t, icons, Some(icon::LINK), "Copy the link after an upload", "", |ui| {
+            theme::toggle(ui, t, &mut d.share.copy_link_after_upload);
+        });
+    }
+
+    fn updates(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared) {
+        theme::section(ui, t, "Updates");
+        let d = &mut self.draft;
+        theme::setting(ui, t, icons, Some(icon::UPDATE), "Automatic updates", "Check once a day and download new versions in the background", |ui| {
+            theme::toggle(ui, t, &mut d.updates.auto_check);
+        });
+        let version = format!("Replay {} for {}", crate::update::CURRENT, crate::sys::PLATFORM);
+        let state = self.update.clone();
+        let (title, desc): (String, String) = match &state {
+            UpdateState::Checking => ("Checking for updates...".into(), version.clone()),
+            UpdateState::UpToDate => ("You're up to date".into(), version.clone()),
+            UpdateState::Ready(v) => (format!("Version {v} is ready to install"), "Replay restarts to finish the update".into()),
+            UpdateState::Available { version: v, why, .. } => (format!("Version {v} is available"), why.clone()),
+            UpdateState::Failed(e) => ("The update check failed".into(), e.clone()),
+            UpdateState::Idle => (version.clone(), "Releases are signed; only verified updates are installed".into()),
+        };
+        let mut check = false;
+        let mut restart = false;
+        let mut open_page = None;
+        theme::setting(ui, t, icons, None, &title, &desc, |ui| match &state {
+            UpdateState::Checking => {
+                ui.spinner();
+            }
+            UpdateState::Ready(_) => {
+                if theme::primary(ui, t, "Restart now", true).clicked() {
+                    restart = true;
+                }
+            }
+            UpdateState::Available { page, .. } => {
+                if theme::button(ui, "Open download page", true).clicked() {
+                    open_page = Some(page.clone());
+                }
+            }
+            _ => {
+                if theme::button(ui, "Check for updates", true).clicked() {
+                    check = true;
+                }
+            }
+        });
+        if let Some(p) = open_page {
+            crate::sys::shell::open_url(&p);
+        }
+        if restart {
+            restart_to_update(ui.ctx(), shared);
+        }
+        if check {
+            self.update = UpdateState::Checking;
+            shared.spawn_job(ui.ctx(), super::JobKind::Update, "Checking for updates".into(), |p| {
+                let r = (|| -> Result<UpdateState, String> {
+                    let Some(rel) = crate::update::check()? else { return Ok(UpdateState::UpToDate) };
+                    if let Err(why) = crate::update::can_self_update() {
+                        return Ok(UpdateState::Available { version: rel.version, page: rel.page, why });
+                    }
+                    let s = crate::update::download(&rel, &|a, b| p(a as f32 / b.max(1) as f32))?;
+                    crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::UpdateStaged);
+                    Ok(UpdateState::Ready(s.version))
+                })();
+                super::JobDone::Update(r.unwrap_or_else(UpdateState::Failed))
+            });
+        }
+    }
+
+    fn general(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
+        let d = &mut self.draft;
+        theme::section(ui, t, "General");
+        theme::setting(ui, t, icons, Some(icon::INFO), "Notifications", "Show a message when a replay is saved", |ui| {
+            theme::toggle(ui, t, &mut d.notify);
+        });
+        theme::setting(ui, t, icons, Some(icon::VOLUME), "Sound", "Play a short sound when a replay is saved", |ui| {
+            theme::toggle(ui, t, &mut d.sound);
+        });
+        theme::setting(ui, t, icons, Some(icon::POWER), "Start with your computer", "Run the recorder when you sign in", |ui| {
+            theme::toggle(ui, t, &mut d.start_with_windows);
+        });
     }
 
     fn lines(text: &str) -> Vec<String> {
         text.lines().map(|l| l.trim().to_ascii_lowercase()).filter(|l| !l.is_empty()).collect()
     }
 
+    /// The draft as a config, without touching the password store.
     fn built(&self, current: &Config) -> Config {
         let mut c = self.draft.clone();
         c.detection.include = Self::lines(&self.include_text);
         c.detection.exclude = Self::lines(&self.exclude_text);
-        if !self.password.is_empty() {
-            c.share.streamable_password_protected = crate::sys::secret::protect(&self.password);
-        } else {
-            c.share.streamable_password_protected = current.share.streamable_password_protected.clone();
-        }
+        c.share.streamable_password_protected = current.share.streamable_password_protected.clone();
         c.sanitized()
     }
 
@@ -341,7 +370,7 @@ impl SettingsPage {
     }
 
     fn save(&mut self, shared: &mut Shared) -> bool {
-        let new = self.built(&shared.cfg);
+        let mut new = self.built(&shared.cfg);
         if let Err(e) = [&new.hotkeys.save_focused, &new.hotkeys.save_all, &new.hotkeys.toggle_game]
             .iter()
             .filter(|h| !h.trim().is_empty())
@@ -350,8 +379,15 @@ impl SettingsPage {
             shared.toast(format!("Fix the hotkey first: {e}"), true);
             return false;
         }
+        if !self.password.is_empty() {
+            new.share.streamable_password_protected = crate::sys::secret::protect(&self.password);
+            if new.share.streamable_password_protected.is_empty() {
+                shared.toast("The password could not be stored securely.", true);
+                return false;
+            }
+        }
         if new.start_with_windows != shared.cfg.start_with_windows && !crate::sys::shell::set_autostart(new.start_with_windows) {
-            shared.toast("Could not change the Windows startup setting.", true);
+            shared.toast("Could not change the startup setting.", true);
         }
         match new.save() {
             Ok(()) => {
@@ -375,7 +411,6 @@ impl SettingsPage {
 /// runs; otherwise this window does it. Either way this window closes.
 fn restart_to_update(ctx: &egui::Context, shared: &mut Shared) {
     if crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::InstallUpdate) {
-        // The recorder installs the update and starts again; reopen from the tray.
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         return;
     }
@@ -387,3 +422,4 @@ fn restart_to_update(ctx: &egui::Context, shared: &mut Shared) {
         None => shared.toast("The downloaded update is missing. Check again.", true),
     }
 }
+

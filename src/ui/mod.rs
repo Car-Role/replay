@@ -1,9 +1,12 @@
-//! The library window: clip browser, editor and settings. It runs as its
+//! The library window: a navigation rail (base layer) and pages on the
+//! content layer: the clip gallery, the editor, and settings. It runs as its
 //! own process (`replay --library`) and exits when closed, so the resident
 //! recorder never carries UI code or memory.
 
 mod editor;
+mod filmstrip;
 mod settings;
+mod theme;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -11,22 +14,21 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use eframe::egui::{self, Color32, RichText, TextureHandle, Vec2};
+use eframe::egui::{
+    self, Align2, Color32, CornerRadius, FontId, Margin, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle, Vec2,
+};
 
 use crate::config::Config;
 use editor::Editor;
+use theme::{Tokens, icon};
 
 pub fn run(open: Option<PathBuf>, settings: bool) {
-    let icon = egui::IconData {
-        rgba: include_bytes!("../../assets/generated/icon-64.rgba").to_vec(),
-        width: 64,
-        height: 64,
-    };
+    let icon = egui::IconData { rgba: include_bytes!("../../assets/generated/icon-64.rgba").to_vec(), width: 64, height: 64 };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Replay")
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([900.0, 560.0])
+            .with_inner_size([1320.0, 840.0])
+            .with_min_inner_size([960.0, 600.0])
             .with_icon(Arc::new(icon)),
         ..Default::default()
     };
@@ -36,8 +38,9 @@ pub fn run(open: Option<PathBuf>, settings: bool) {
 }
 
 #[derive(PartialEq, Clone, Copy)]
-enum Tab {
+enum Page {
     Clips,
+    Editor,
     Settings,
 }
 
@@ -84,6 +87,8 @@ pub struct Shared {
     pub job_tx: Sender<(usize, JobDone)>,
     pub next_job: usize,
     pub uploads: HashMap<String, String>,
+    /// True when the Segoe Fluent Icons font is available.
+    pub icons: bool,
     toast: Option<Toast>,
 }
 
@@ -111,9 +116,7 @@ impl Shared {
         let tx = self.job_tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            unsafe {
-                let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
-            }
+            crate::sys::init_tool();
             let p2 = progress.clone();
             let c2 = ctx.clone();
             let report = move |f: f32| {
@@ -149,14 +152,13 @@ fn uploads_path() -> PathBuf {
 }
 
 pub struct LibraryApp {
-    tab: Tab,
+    page: Page,
     shared: Shared,
     job_rx: Receiver<(usize, JobDone)>,
     clips: Vec<ClipEntry>,
     scan_rx: Option<Receiver<Vec<ClipEntry>>>,
     last_scan: Instant,
     filter: String,
-    selected: Option<PathBuf>,
     checked: HashSet<PathBuf>,
     thumbs: HashMap<PathBuf, TextureHandle>,
     thumb_tx: Sender<PathBuf>,
@@ -165,17 +167,16 @@ pub struct LibraryApp {
     editor: Option<Editor>,
     settings: settings::SettingsPage,
     confirm_delete: Option<Vec<PathBuf>>,
+    logo: TextureHandle,
+    recorder_running: bool,
+    recorder_checked: Instant,
 }
 
 impl LibraryApp {
     fn new(cc: &eframe::CreationContext, open: Option<PathBuf>, settings: bool) -> Self {
         let ctx = cc.egui_ctx.clone();
-        for theme in [egui::Theme::Dark, egui::Theme::Light] {
-            let mut style = (*ctx.style_of(theme)).clone();
-            style.spacing.item_spacing = Vec2::new(8.0, 6.0);
-            style.spacing.button_padding = Vec2::new(10.0, 4.0);
-            ctx.set_style_of(theme, style);
-        }
+        let icons = theme::install_fonts(&ctx);
+        theme::apply(&ctx);
 
         let (thumb_tx, thumb_req_rx) = mpsc::channel::<PathBuf>();
         let (thumb_done_tx, thumb_rx) = mpsc::channel();
@@ -183,11 +184,9 @@ impl LibraryApp {
         std::thread::Builder::new()
             .name("thumbnails".into())
             .spawn(move || {
-                unsafe {
-                    let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
-                }
+                crate::sys::init_ui();
                 while let Ok(p) = thumb_req_rx.recv() {
-                    if let Some((w, h, px)) = crate::sys::shell::thumbnail(&p, 192, 108) {
+                    if let Some((w, h, px)) = thumbnail(&p) {
                         let _ = thumb_done_tx.send((p, w, h, px));
                         tctx.request_repaint();
                     }
@@ -198,16 +197,17 @@ impl LibraryApp {
         let (job_tx, job_rx) = mpsc::channel();
         let cfg = Config::load();
         let uploads = std::fs::read_to_string(uploads_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let logo_img = egui::ColorImage::from_rgba_unmultiplied([64, 64], include_bytes!("../../assets/generated/icon-64.rgba"));
+        let logo = ctx.load_texture("logo", logo_img, egui::TextureOptions::LINEAR);
         let mut app = Self {
-            tab: Tab::Clips,
+            page: if settings { Page::Settings } else { Page::Clips },
             settings: settings::SettingsPage::new(&cfg),
-            shared: Shared { cfg, jobs: Vec::new(), job_tx, next_job: 0, uploads, toast: None },
+            shared: Shared { cfg, jobs: Vec::new(), job_tx, next_job: 0, uploads, icons, toast: None },
             job_rx,
             clips: Vec::new(),
             scan_rx: None,
             last_scan: Instant::now(),
             filter: String::new(),
-            selected: None,
             checked: HashSet::new(),
             thumbs: HashMap::new(),
             thumb_tx,
@@ -215,13 +215,13 @@ impl LibraryApp {
             thumb_requested: HashSet::new(),
             editor: None,
             confirm_delete: None,
+            logo,
+            recorder_running: crate::sys::shell::recorder_running(),
+            recorder_checked: Instant::now(),
         };
         app.rescan(&ctx);
-        if settings {
-            app.tab = Tab::Settings;
-        }
         if let Some(p) = open.filter(|p| p.exists()) {
-            app.select(&ctx, p);
+            app.open_editor(&ctx, p);
         }
         app
     }
@@ -240,12 +240,11 @@ impl LibraryApp {
         self.last_scan = Instant::now();
     }
 
-    fn select(&mut self, ctx: &egui::Context, path: PathBuf) {
-        if self.selected.as_ref() == Some(&path) {
-            return;
+    fn open_editor(&mut self, ctx: &egui::Context, path: PathBuf) {
+        if self.editor.as_ref().map(|e| e.path() != path).unwrap_or(true) {
+            self.editor = Some(Editor::open(ctx, &path, &self.shared.cfg));
         }
-        self.editor = Some(Editor::open(ctx, &path, &self.shared.cfg));
-        self.selected = Some(path);
+        self.page = Page::Editor;
     }
 
     fn poll_background(&mut self, ctx: &egui::Context) {
@@ -257,9 +256,12 @@ impl LibraryApp {
             let existing: HashSet<&PathBuf> = self.clips.iter().map(|c| &c.path).collect();
             self.checked.retain(|p| existing.contains(p));
         }
-        // New clips arrive while the window is open; look every few seconds.
-        if self.scan_rx.is_none() && self.last_scan.elapsed() > Duration::from_secs(4) {
+        if self.scan_rx.is_none() && self.last_scan.elapsed() > Duration::from_secs(4) && self.page == Page::Clips {
             self.rescan(ctx);
+        }
+        if self.recorder_checked.elapsed() > Duration::from_secs(2) {
+            self.recorder_running = crate::sys::shell::recorder_running();
+            self.recorder_checked = Instant::now();
         }
         while let Ok((p, w, h, px)) = self.thumb_rx.try_recv() {
             let img = egui::ColorImage::from_rgba_unmultiplied([w, h], &px);
@@ -272,8 +274,8 @@ impl LibraryApp {
                 JobDone::Exported(p) => {
                     self.shared.toast(format!("Saved {}", p.file_name().unwrap_or_default().to_string_lossy()), false);
                     self.rescan(ctx);
-                    self.selected = None;
-                    self.select(ctx, p);
+                    self.editor = None;
+                    self.open_editor(ctx, p);
                 }
                 JobDone::Uploaded(p, url) => {
                     self.shared.uploads.insert(p.to_string_lossy().into_owned(), url.clone());
@@ -281,74 +283,91 @@ impl LibraryApp {
                         let _ = std::fs::write(uploads_path(), t);
                     }
                     let copied = self.shared.cfg.share.copy_link_after_upload && crate::sys::shell::copy_text(&url);
-                    let msg = if copied { "Uploaded. Link copied." } else { "Uploaded." };
-                    self.shared.toast_link(msg, url);
+                    self.shared.toast_link(if copied { "Uploaded. The link is copied." } else { "Uploaded." }, url);
                 }
                 JobDone::Update(state) => {
                     if let settings::UpdateState::Ready(v) = &state {
-                        self.shared.toast(format!("Replay {v} is downloaded. Restart to update (Settings > Updates)."), false);
+                        self.shared.toast(format!("Replay {v} is downloaded. Restart to update in Settings."), false);
                     }
                     self.settings.update = state;
                 }
                 JobDone::Failed(e) => self.shared.toast(e, true),
             }
         }
+        if !self.shared.jobs.is_empty() || self.shared.toast.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
     }
 
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
+    // ------------------------------------------------------------ nav rail
+
+    fn nav(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        let icons = self.shared.icons;
+        ui.add_space(14.0);
         ui.horizontal(|ui| {
-            ui.add_space(4.0);
-            let (r, _) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
-            ui.painter().circle_filled(r.center(), 7.0, Color32::from_rgb(0xe5, 0x39, 0x35));
-            ui.label(RichText::new("Replay").strong().size(18.0));
-            ui.add_space(16.0);
-            ui.selectable_value(&mut self.tab, Tab::Clips, RichText::new("Clips").size(15.0));
-            ui.selectable_value(&mut self.tab, Tab::Settings, RichText::new("Settings").size(15.0));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if crate::sys::shell::recorder_running() {
-                    ui.label(RichText::new("Recorder running").color(Color32::from_rgb(0x4c, 0xaf, 0x50)));
-                } else {
-                    if ui.button("Start recorder").clicked()
+            ui.add_space(12.0);
+            ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(self.logo.id(), Vec2::splat(20.0))));
+            ui.add_space(6.0);
+            ui.label(theme::body_strong("Replay").color(t.text));
+        });
+        ui.add_space(14.0);
+        ui.spacing_mut().item_spacing.y = 4.0;
+        if theme::nav_item(ui, t, icons, icon::LIBRARY, "Clips", self.page == Page::Clips).clicked() {
+            self.page = Page::Clips;
+        }
+        if self.editor.is_some() && theme::nav_item(ui, t, icons, icon::CUT, "Editor", self.page == Page::Editor).clicked() {
+            self.page = Page::Editor;
+        }
+        // Bottom of the rail: settings and recorder status, pinned to the window's bottom edge.
+        let bottom = ui.ctx().content_rect().bottom();
+        let r = ui.max_rect();
+        let area = egui::Rect::from_min_max(egui::pos2(r.left(), bottom - 140.0), egui::pos2(r.right(), bottom));
+        let mut bottom_ui = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::bottom_up(egui::Align::Min)));
+        bottom_ui.spacing_mut().item_spacing.y = 4.0;
+        bottom_ui.scope(|ui| {
+            ui.add_space(10.0);
+            egui::Frame::new().inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                        let c = if self.recorder_running { t.success } else { t.text3 };
+                        ui.painter().circle_filled(r.center(), 4.0, c);
+                        ui.label(theme::caption(if self.recorder_running { "Recorder on" } else { "Recorder off" }).color(t.text2));
+                    });
+                    if !self.recorder_running
+                        && ui.add(egui::Button::new(theme::caption("Start recorder")).min_size(Vec2::new(0.0, 28.0))).clicked()
                         && let Ok(exe) = std::env::current_exe()
                     {
                         let _ = std::process::Command::new(exe).spawn();
+                        self.recorder_checked = Instant::now() - Duration::from_secs(1);
                     }
-                    ui.label(RichText::new("Recorder not running").color(Color32::from_rgb(0xff, 0x98, 0x00)));
-                }
+                });
             });
+            if theme::nav_item(ui, t, icons, icon::SETTINGS, "Settings", self.page == Page::Settings).clicked() {
+                self.page = Page::Settings;
+            }
         });
     }
 
-    fn clip_list(&mut self, ui: &mut egui::Ui) {
+    // ---------------------------------------------------------- clips page
+
+    fn clips_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         let ctx = ui.ctx().clone();
-        ui.add_space(4.0);
+        let icons = self.shared.icons;
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Search clips").desired_width(f32::INFINITY));
-        });
-        ui.horizontal(|ui| {
-            if ui.button("Open folder").clicked() {
-                let _ = std::fs::create_dir_all(&self.shared.cfg.output_dir);
-                crate::sys::shell::open_path(&self.shared.cfg.output_dir);
-            }
-            if ui.button("Refresh").clicked() {
-                self.rescan(&ctx);
-            }
-            ui.label(RichText::new(format!("{} clips", self.clips.len())).weak());
-        });
-        if self.checked.len() >= 2 {
-            ui.horizontal(|ui| {
-                if ui.button(format!("Join {} clips", self.checked.len())).clicked() {
-                    self.join_checked(&ctx);
+            ui.label(theme::title("Clips").color(t.text));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::subtle(ui, theme::label_with_icon(icons, icon::REFRESH, if icons { "" } else { "Refresh" })).on_hover_text("Refresh").clicked() {
+                    self.rescan(&ctx);
                 }
-                if ui.button("Delete selected").clicked() {
-                    self.confirm_delete = Some(self.checked.iter().cloned().collect());
+                if theme::button(ui, theme::label_with_icon(icons, icon::FOLDER, "Open folder"), true).clicked() {
+                    let _ = std::fs::create_dir_all(&self.shared.cfg.output_dir);
+                    crate::sys::shell::open_path(&self.shared.cfg.output_dir);
                 }
-                if ui.button("Clear").clicked() {
-                    self.checked.clear();
-                }
+                ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Search clips").desired_width(240.0).margin(Margin::symmetric(10, 7)));
             });
-        }
-        ui.separator();
+        });
+        ui.add_space(16.0);
 
         let filter = self.filter.to_lowercase();
         let mut by_game: Vec<(String, Vec<ClipEntry>)> = Vec::new();
@@ -358,80 +377,181 @@ impl LibraryApp {
                 None => by_game.push((c.game.clone(), vec![c.clone()])),
             }
         }
+
         if self.clips.is_empty() && self.scan_rx.is_none() {
-            ui.add_space(20.0);
-            ui.label(format!(
-                "No clips yet.\n\nPlay a game and press {} to save the last {} seconds.",
-                self.shared.cfg.hotkeys.save_focused, self.shared.cfg.replay_seconds
-            ));
+            ui.add_space(80.0);
+            ui.vertical_centered(|ui| {
+                if icons {
+                    ui.label(theme::glyph(icon::VIDEO, 40.0).color(t.text3));
+                }
+                ui.add_space(8.0);
+                ui.label(theme::subtitle("No clips yet").color(t.text));
+                ui.label(
+                    RichText::new(format!(
+                        "Play a game and press {} to save the last {} seconds.",
+                        self.shared.cfg.hotkeys.save_focused, self.shared.cfg.replay_seconds
+                    ))
+                    .color(t.text2),
+                );
+            });
+            return;
         }
-        let mut clicked = None;
+
+        let mut open = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let card_w = 264.0;
+            let gap = 12.0;
             for (game, clips) in &by_game {
-                egui::CollapsingHeader::new(RichText::new(format!("{game}  ({})", clips.len())).strong())
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        for c in clips {
-                            if self.clip_row(ui, c) {
-                                clicked = Some(c.path.clone());
+                ui.horizontal(|ui| {
+                    ui.label(theme::subtitle(game).color(t.text));
+                    ui.label(theme::caption(format!("{} {}", clips.len(), if clips.len() == 1 { "clip" } else { "clips" })).color(t.text3));
+                });
+                ui.add_space(4.0);
+                let cols = (((ui.available_width() + gap) / (card_w + gap)).floor() as usize).max(1);
+                let w = (ui.available_width() - gap * (cols as f32 - 1.0)) / cols as f32;
+                for row in clips.chunks(cols) {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        for c in row {
+                            if self.clip_card(ui, t, c, w) {
+                                open = Some(c.path.clone());
                             }
                         }
                     });
+                    ui.add_space(gap - 8.0);
+                }
+                ui.add_space(20.0);
             }
+            ui.add_space(64.0);
         });
-        if let Some(p) = clicked {
-            self.select(&ctx, p);
+        if let Some(p) = open {
+            self.open_editor(&ctx, p);
         }
     }
 
-    /// One row; returns true when clicked.
-    fn clip_row(&mut self, ui: &mut egui::Ui, c: &ClipEntry) -> bool {
-        let selected = self.selected.as_ref() == Some(&c.path);
-        let mut clicked = false;
-        let frame = egui::Frame::NONE
-            .inner_margin(4.0)
-            .corner_radius(4.0)
-            .fill(if selected { ui.visuals().selection.bg_fill.gamma_multiply(0.5) } else { Color32::TRANSPARENT });
-        let resp = frame
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let mut checked = self.checked.contains(&c.path);
-                    if ui.checkbox(&mut checked, "").changed() {
-                        if checked {
-                            self.checked.insert(c.path.clone());
-                        } else {
-                            self.checked.remove(&c.path);
-                        }
-                    }
-                    let size = Vec2::new(96.0, 54.0);
-                    match self.thumbs.get(&c.path) {
-                        Some(t) => {
-                            ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(t.id(), size)).corner_radius(3.0));
-                        }
-                        None => {
-                            if self.thumb_requested.insert(c.path.clone()) {
-                                let _ = self.thumb_tx.send(c.path.clone());
-                            }
-                            let (r, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-                            ui.painter().rect_filled(r, 3.0, ui.visuals().extreme_bg_color);
-                        }
-                    }
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(&c.name).strong());
-                        ui.label(
-                            RichText::new(format!("{}  ·  {:.1} MB", fmt_time(c.duration), c.size as f64 / 1e6)).weak().small(),
-                        );
-                        if self.shared.uploads.contains_key(c.path.to_string_lossy().as_ref()) {
-                            ui.label(RichText::new("Uploaded").small().color(Color32::from_rgb(0x42, 0xa5, 0xf5)));
-                        }
-                    });
-                });
-            })
-            .response;
-        if resp.interact(egui::Sense::click()).clicked() {
-            clicked = true;
+    /// One gallery card. Returns true when it was clicked (open in editor).
+    fn clip_card(&mut self, ui: &mut egui::Ui, t: &Tokens, c: &ClipEntry, w: f32) -> bool {
+        let thumb_h = (w * 9.0 / 16.0).round();
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, thumb_h + 62.0), Sense::click());
+        let checked = self.checked.contains(&c.path);
+        let hovered = resp.hovered();
+        let p = ui.painter_at(rect);
+        p.rect(
+            rect,
+            CornerRadius::same(theme::R_CARD),
+            if hovered { t.control_hover } else { t.card },
+            Stroke::new(if checked { 2.0 } else { 1.0 }, if checked { t.accent } else { t.card_stroke }),
+            StrokeKind::Inside,
+        );
+
+        let img = Rect::from_min_size(rect.min + Vec2::splat(1.0), Vec2::new(w - 2.0, thumb_h));
+        let cr = CornerRadius { nw: theme::R_CARD - 1, ne: theme::R_CARD - 1, sw: 0, se: 0 };
+        p.rect_filled(img, cr, Color32::from_gray(16));
+        match self.thumbs.get(&c.path) {
+            Some(tex) => {
+                let [tw, th] = tex.size();
+                let have = tw as f32 / th.max(1) as f32;
+                let want = img.width() / img.height();
+                let uv = if have > want {
+                    let u = want / have;
+                    Rect::from_min_max(Pos2::new((1.0 - u) / 2.0, 0.0), Pos2::new((1.0 + u) / 2.0, 1.0))
+                } else {
+                    let v = have / want;
+                    Rect::from_min_max(Pos2::new(0.0, (1.0 - v) / 2.0), Pos2::new(1.0, (1.0 + v) / 2.0))
+                };
+                p.add(egui::epaint::RectShape::filled(img, cr, Color32::WHITE).with_texture(tex.id(), uv));
+            }
+            None => {
+                if self.thumb_requested.insert(c.path.clone()) {
+                    let _ = self.thumb_tx.send(c.path.clone());
+                }
+            }
         }
-        clicked
+        // Duration badge on the thumbnail.
+        let galley = p.layout_no_wrap(theme::fmt_short(c.duration), FontId::proportional(12.0), Color32::WHITE);
+        let size = galley.size() + Vec2::new(10.0, 4.0);
+        let br = Rect::from_min_size(img.right_bottom() - size - Vec2::new(8.0, 8.0), size);
+        p.rect_filled(br, CornerRadius::same(theme::R_CONTROL), Color32::from_black_alpha(190));
+        p.galley(br.min + Vec2::new(5.0, 2.0), galley, Color32::WHITE);
+
+        // Title (truncated) and details.
+        let tx = rect.left() + 12.0;
+        let mut job = egui::text::LayoutJob::single_section(
+            c.name.clone(),
+            egui::TextFormat::simple(FontId::new(14.0, egui::FontFamily::Name(theme::SEMIBOLD.into())), t.text),
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(w - 24.0);
+        p.galley(Pos2::new(tx, img.bottom() + 10.0), p.layout_job(job), t.text);
+        let uploaded = self.shared.uploads.contains_key(c.path.to_string_lossy().as_ref());
+        let meta = format!("{:.1} MB{}", c.size as f64 / 1e6, if uploaded { "  ·  Uploaded" } else { "" });
+        p.text(Pos2::new(tx, img.bottom() + 32.0), Align2::LEFT_TOP, meta, FontId::proportional(12.0), t.text2);
+
+        // Selection check box on the thumbnail (on hover, or while selecting).
+        let cb = Rect::from_min_size(img.min + Vec2::splat(8.0), Vec2::splat(22.0));
+        let mut toggled = false;
+        if hovered || checked || !self.checked.is_empty() {
+            let cb_resp = ui.interact(cb, resp.id.with("check"), Sense::click());
+            p.rect(
+                cb,
+                CornerRadius::same(theme::R_CONTROL),
+                if checked { t.accent } else { Color32::from_black_alpha(150) },
+                Stroke::new(1.0, if checked { t.accent } else { Color32::from_white_alpha(210) }),
+                StrokeKind::Inside,
+            );
+            if checked {
+                let c0 = cb.center();
+                p.line_segment([c0 + Vec2::new(-5.0, 0.0), c0 + Vec2::new(-1.5, 4.0)], Stroke::new(2.0, t.on_accent));
+                p.line_segment([c0 + Vec2::new(-1.5, 4.0), c0 + Vec2::new(5.5, -4.5)], Stroke::new(2.0, t.on_accent));
+            }
+            if cb_resp.on_hover_text("Select").clicked() {
+                toggled = true;
+                if checked {
+                    self.checked.remove(&c.path);
+                } else {
+                    self.checked.insert(c.path.clone());
+                }
+            }
+        }
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+        resp.clicked() && !toggled
+    }
+
+    /// Floating command bar for selected clips.
+    fn selection_bar(&mut self, ctx: &egui::Context, t: &Tokens, area: Rect) {
+        if self.checked.is_empty() || self.page != Page::Clips {
+            return;
+        }
+        let icons = self.shared.icons;
+        let n = self.checked.len();
+        egui::Area::new(egui::Id::new("selection-bar"))
+            .fixed_pos(Pos2::new(area.center().x - 240.0, area.bottom() - 76.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(if t.dark { Color32::from_gray(44) } else { Color32::from_gray(252) })
+                    .stroke(Stroke::new(1.0, t.control_stroke))
+                    .corner_radius(CornerRadius::same(theme::R_CARD))
+                    .shadow(ui.visuals().popup_shadow)
+                    .inner_margin(Margin::symmetric(16, 10))
+                    .show(ui, |ui| {
+                        ui.set_width(448.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("{n} selected")).color(t.text));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if theme::subtle(ui, "Clear").clicked() {
+                                    self.checked.clear();
+                                }
+                                if theme::button(ui, theme::label_with_icon(icons, icon::DELETE, "Delete"), true).clicked() {
+                                    self.confirm_delete = Some(self.checked.iter().cloned().collect());
+                                }
+                                let join = theme::label_with_icon(icons, icon::JOIN, &format!("Join {n} clips"));
+                                if theme::primary(ui, t, join, n >= 2).on_disabled_hover_text("Select two or more clips to join them").clicked() {
+                                    self.join_checked(ctx);
+                                }
+                            });
+                        });
+                    });
+            });
     }
 
     fn join_checked(&mut self, ctx: &egui::Context) {
@@ -450,63 +570,129 @@ impl LibraryApp {
         self.checked.clear();
     }
 
-    fn status_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            for j in &self.shared.jobs {
-                let p = j.progress.lock().map(|p| *p).unwrap_or(0.0);
-                let _ = matches!(j.kind, JobKind::Export | JobKind::Upload | JobKind::Update);
-                ui.label(&j.label);
-                ui.add(egui::ProgressBar::new(p).desired_width(160.0).show_percentage());
-            }
-            if let Some(t) = &self.shared.toast {
-                if t.at.elapsed() > Duration::from_secs(if t.link.is_some() { 30 } else { 6 }) {
-                    self.shared.toast = None;
-                } else {
-                    let color = if t.error { Color32::from_rgb(0xef, 0x53, 0x50) } else { ui.visuals().text_color() };
-                    ui.label(RichText::new(&t.text).color(color));
-                    if let Some(link) = t.link.clone() {
-                        ui.hyperlink(&link);
-                        if ui.small_button("Copy link").clicked() {
-                            crate::sys::shell::copy_text(&link);
-                        }
-                    }
-                    ui.ctx().request_repaint_after(Duration::from_secs(1));
+    // ------------------------------------------------------------- overlays
+
+    /// Progress and messages, as Fluent InfoBars in the bottom-right corner.
+    fn info_bars(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let icons = self.shared.icons;
+        let expired = self.shared.toast.as_ref().is_some_and(|x| x.at.elapsed() > Duration::from_secs(if x.link.is_some() { 30 } else { 6 }));
+        if expired {
+            self.shared.toast = None;
+        }
+        if self.shared.jobs.is_empty() && self.shared.toast.is_none() {
+            return;
+        }
+        let fill = if t.dark { Color32::from_gray(44) } else { Color32::from_gray(252) };
+        let frame = egui::Frame::new()
+            .fill(fill)
+            .stroke(Stroke::new(1.0, t.control_stroke))
+            .corner_radius(CornerRadius::same(theme::R_CARD))
+            .shadow(ctx.style_of(ctx.theme()).visuals.popup_shadow)
+            .inner_margin(Margin::same(12));
+        let jobs: Vec<(String, f32)> = self.shared.jobs.iter().map(|j| (j.label.clone(), j.progress.lock().map(|p| *p).unwrap_or(0.0))).collect();
+        let toast = self.shared.toast.as_ref().map(|x| (x.text.clone(), x.error, x.link.clone()));
+        let mut close = false;
+        egui::Area::new(egui::Id::new("info-bars"))
+            .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-24.0, -24.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                for (label, p) in &jobs {
+                    frame.show(ui, |ui| {
+                        ui.set_width(340.0);
+                        ui.label(RichText::new(label).color(t.text));
+                        ui.add(egui::ProgressBar::new(*p).desired_height(4.0).fill(t.accent));
+                    });
+                    ui.add_space(8.0);
                 }
-            }
-        });
+                if let Some((text, error, link)) = &toast {
+                    frame.show(ui, |ui| {
+                        ui.set_width(340.0);
+                        ui.horizontal(|ui| {
+                            if icons {
+                                let (g, c) = if *error { (icon::ERROR, t.critical) } else { (icon::CHECK, t.success) };
+                                ui.label(theme::glyph(g, 16.0).color(c));
+                            }
+                            ui.add(egui::Label::new(RichText::new(text).color(t.text)).wrap());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                                if theme::subtle(ui, RichText::new("✕").size(12.0)).clicked() {
+                                    close = true;
+                                }
+                            });
+                        });
+                        if let Some(link) = link {
+                            ui.horizontal(|ui| {
+                                ui.hyperlink_to(theme::caption(link.trim_start_matches("https://")), link);
+                                if theme::subtle(ui, theme::caption("Copy link")).clicked() {
+                                    crate::sys::shell::copy_text(link);
+                                }
+                            });
+                        }
+                    });
+                }
+            });
+        if close {
+            self.shared.toast = None;
+        }
     }
 
-    fn delete_dialog(&mut self, ctx: &egui::Context) {
+    /// Fluent ContentDialog for deleting clips.
+    fn delete_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
         let Some(paths) = self.confirm_delete.clone() else { return };
-        let mut open = true;
+        let screen = ctx.content_rect();
         let mut done = false;
-        egui::Window::new("Delete clips")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.label(format!("Move {} clip(s) to the Recycle Bin?", paths.len()));
-                ui.horizontal(|ui| {
-                    if ui.button("Move to Recycle Bin").clicked() {
-                        if self.selected.as_ref().is_some_and(|s| paths.contains(s)) {
-                            self.editor = None;
-                            self.selected = None;
-                        }
-                        if crate::sys::shell::recycle(&paths) {
-                            self.shared.toast(format!("Moved {} clip(s) to the Recycle Bin", paths.len()), false);
-                        } else {
-                            self.shared.toast("Could not delete the clip (is it open in another program?)", true);
-                        }
-                        self.checked.clear();
-                        done = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        done = true;
-                    }
+        egui::Area::new(egui::Id::new("smoke")).fixed_pos(screen.min).order(egui::Order::Middle).show(ctx, |ui| {
+            let (r, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
+            ui.painter().rect_filled(r, CornerRadius::ZERO, t.smoke);
+            if resp.clicked() {
+                done = true;
+            }
+        });
+        egui::Area::new(egui::Id::new("delete-dialog")).anchor(Align2::CENTER_CENTER, Vec2::ZERO).order(egui::Order::Foreground).show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(if t.dark { Color32::from_gray(43) } else { Color32::WHITE })
+                .stroke(Stroke::new(1.0, t.control_stroke))
+                .corner_radius(CornerRadius::same(theme::R_CARD))
+                .shadow(ui.visuals().window_shadow)
+                .show(ui, |ui| {
+                    ui.set_width(420.0);
+                    egui::Frame::new().inner_margin(Margin::same(24)).show(ui, |ui| {
+                        let n = paths.len();
+                        ui.label(theme::subtitle(if n == 1 { "Delete this clip?".to_string() } else { format!("Delete {n} clips?") }).color(t.text));
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("They move to the Recycle Bin, so you can restore them.").color(t.text2));
+                    });
+                    egui::Frame::new()
+                        .fill(if t.dark { Color32::from_gray(32) } else { Color32::from_gray(243) })
+                        .corner_radius(CornerRadius { nw: 0, ne: 0, sw: theme::R_CARD, se: theme::R_CARD })
+                        .inner_margin(Margin::same(24))
+                        .show(ui, |ui| {
+                            ui.columns(2, |cols| {
+                                let w = cols[0].available_width();
+                                let del = egui::Button::new(RichText::new("Delete").color(t.on_accent)).fill(t.accent).stroke(Stroke::NONE);
+                                if cols[0].add_sized(Vec2::new(w, theme::CONTROL_H), del).clicked() {
+                                    if self.editor.as_ref().is_some_and(|e| paths.iter().any(|p| p == e.path())) {
+                                        self.editor = None;
+                                        self.page = Page::Clips;
+                                    }
+                                    if crate::sys::shell::recycle(&paths) {
+                                        self.shared.toast(format!("Moved {} clip(s) to the Recycle Bin.", paths.len()), false);
+                                    } else {
+                                        self.shared.toast("The clip could not be deleted. Is it open in another program?", true);
+                                    }
+                                    self.checked.clear();
+                                    done = true;
+                                }
+                                if cols[1].add_sized(Vec2::new(w, theme::CONTROL_H), egui::Button::new("Cancel")).clicked() {
+                                    done = true;
+                                }
+                            });
+                        });
                 });
-            });
-        if done || !open {
+        });
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            done = true;
+        }
+        if done {
             self.confirm_delete = None;
             self.rescan(ctx);
         }
@@ -516,51 +702,63 @@ impl LibraryApp {
 impl eframe::App for LibraryApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let t = theme::tokens(&ctx);
         self.poll_background(&ctx);
 
-        egui::Panel::top("top").show(ui, |ui| {
-            ui.add_space(4.0);
-            self.top_bar(ui);
-            ui.add_space(2.0);
-        });
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        egui::Panel::left("nav")
+            .exact_size(220.0)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(t.base))
+            .show(ui, |ui| self.nav(ui, &t));
 
-        match self.tab {
-            Tab::Clips => {
-                egui::Panel::left("clips").resizable(true).default_size(380.0).size_range(280.0..=600.0).show(ui, |ui| {
-                    self.clip_list(ui);
-                });
-                egui::CentralPanel::default().show(ui, |ui| match &mut self.editor {
-                    Some(ed) => {
-                        if let Some(action) = ed.ui(ui, &mut self.shared) {
-                            match action {
-                                editor::Action::Delete(p) => self.confirm_delete = Some(vec![p]),
-                            }
-                        }
-                    }
-                    None => {
-                        ui.centered_and_justified(|ui| {
-                            ui.label(RichText::new("Select a clip to play, trim, mix or share.").weak().size(16.0));
-                        });
-                    }
-                });
-            }
-            Tab::Settings => {
-                egui::CentralPanel::default().show(ui, |ui| {
-                    if self.settings.ui(ui, &mut self.shared) {
+        let mut content_rect = Rect::NOTHING;
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(t.base)).show(ui, |ui| {
+            // Content layer, rounded where it meets the navigation rail.
+            let r = ui.max_rect();
+            content_rect = r;
+            ui.painter().rect(r, CornerRadius { nw: theme::R_CARD, ne: 0, sw: 0, se: 0 }, t.layer, Stroke::new(1.0, t.layer_stroke), StrokeKind::Inside);
+            let inner = r.shrink(theme::GUTTER);
+            let mut page_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
+            match self.page {
+                Page::Clips => self.clips_page(&mut page_ui, &t),
+                Page::Editor => match &mut self.editor {
+                    Some(ed) => match ed.ui(&mut page_ui, &mut self.shared) {
+                        Some(editor::Action::Back) => self.page = Page::Clips,
+                        Some(editor::Action::Delete(p)) => self.confirm_delete = Some(vec![p]),
+                        None => {}
+                    },
+                    None => self.page = Page::Clips,
+                },
+                Page::Settings => {
+                    if self.settings.ui(&mut page_ui, &mut self.shared) {
                         self.rescan(&ctx);
                     }
-                });
+                }
             }
-        }
-        self.delete_dialog(&ctx);
+        });
+        self.selection_bar(&ctx, &t, content_rect);
+        self.info_bars(&ctx, &t);
+        self.delete_dialog(&ctx, &t);
     }
 }
 
-pub fn fmt_time(s: f64) -> String {
-    let s = s.max(0.0);
-    let m = (s / 60.0) as u64;
-    format!("{m}:{:04.1}", s - m as f64 * 60.0)
+/// System thumbnail, or a frame decoded from the clip when the system has none.
+fn thumbnail(p: &Path) -> Option<(usize, usize, Vec<u8>)> {
+    if let Some(t) = crate::sys::shell::thumbnail(p, 320, 180) {
+        return Some(t);
+    }
+    let dec = crate::sys::player::VideoDecoder::open(p, || {});
+    dec.seek(1.0, 1);
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < deadline {
+        if let Ok(f) = dec.frames.recv_timeout(Duration::from_millis(500))
+            && f.generation == 1
+        {
+            return Some(filmstrip::shrink(&f.rgba, f.width, f.height, 180));
+        }
+    }
+    None
 }
 
 fn scan(dir: &Path, known: &HashMap<PathBuf, (SystemTime, u64, f64)>) -> Vec<ClipEntry> {
@@ -596,7 +794,6 @@ fn scan(dir: &Path, known: &HashMap<PathBuf, (SystemTime, u64, f64)>) -> Vec<Cli
             });
         }
     }
-    // Newest first, games ordered by their newest clip.
     out.sort_by_key(|c| std::cmp::Reverse(c.modified));
     out
 }
