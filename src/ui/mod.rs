@@ -80,6 +80,15 @@ impl Sort {
     }
 }
 
+/// The montage dialog: clips in order, and optional music.
+struct Montage {
+    clips: Vec<PathBuf>,
+    music: Option<PathBuf>,
+    music_volume: u32,
+    game_volume: u32,
+    fade_out: bool,
+}
+
 /// A dialog that edits one clip: rename it, or change its tags.
 enum ClipDialog {
     Rename(PathBuf, String),
@@ -219,6 +228,7 @@ pub struct LibraryApp {
     dialog: Option<ClipDialog>,
     /// The game whose settings panel is open on the Games page.
     game_open: Option<String>,
+    montage: Option<Montage>,
 }
 
 impl LibraryApp {
@@ -279,6 +289,7 @@ impl LibraryApp {
             group_by_game: true,
             dialog: None,
             game_open: None,
+            montage: None,
         };
         app.rescan(&ctx);
         if let Some(p) = open.filter(|p| p.exists()) {
@@ -798,7 +809,7 @@ impl LibraryApp {
         let icons = self.shared.icons;
         let n = self.checked.len();
         egui::Area::new(egui::Id::new("selection-bar"))
-            .fixed_pos(Pos2::new(area.center().x - 240.0, area.bottom() - 76.0))
+            .fixed_pos(Pos2::new(area.center().x - 300.0, area.bottom() - 76.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 egui::Frame::new()
@@ -808,7 +819,7 @@ impl LibraryApp {
                     .shadow(ui.visuals().popup_shadow)
                     .inner_margin(Margin::symmetric(16, 10))
                     .show(ui, |ui| {
-                        ui.set_width(448.0);
+                        ui.set_width(568.0);
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(format!("{n} selected")).color(t.text));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -821,6 +832,18 @@ impl LibraryApp {
                                 let join = theme::label_with_icon(icons, icon::JOIN, &format!("Join {n} clips"));
                                 if theme::primary(ui, t, join, n >= 2).on_disabled_hover_text("Select two or more clips to join them").clicked() {
                                     self.join_checked(ctx);
+                                }
+                                let montage = theme::label_with_icon(icons, icon::VIDEO, "Montage...");
+                                if theme::button(ui, montage, n >= 2).on_hover_text("Join the clips in an order you choose, with music").clicked() {
+                                    let mut list: Vec<&ClipEntry> = self.clips.iter().filter(|c| self.checked.contains(&c.path)).collect();
+                                    list.sort_by_key(|c| c.modified);
+                                    self.montage = Some(Montage {
+                                        clips: list.iter().map(|c| c.path.clone()).collect(),
+                                        music: None,
+                                        music_volume: 60,
+                                        game_volume: 100,
+                                        fade_out: true,
+                                    });
                                 }
                             });
                         });
@@ -835,7 +858,7 @@ impl LibraryApp {
             list.iter().map(|c| crate::edit::Segment { path: c.path.clone(), start: 0.0, end: f64::MAX }).collect();
         let out = crate::edit::edited_name(&segments[0].path, "joined");
         let a = &self.shared.cfg.audio;
-        let mix = crate::edit::Mix { game: a.game_volume, mic: a.microphone_volume, keep_separate: true, bitrate_kbps: a.bitrate_kbps };
+        let mix = crate::edit::Mix { game: a.game_volume, mic: a.microphone_volume, keep_separate: true, bitrate_kbps: a.bitrate_kbps, music: None };
         let label = format!("Joining {} clips", segments.len());
         let total: f64 = list.iter().map(|c| c.duration).sum();
         self.shared.spawn_job(ctx, JobKind::Export, label, move |p| {
@@ -926,7 +949,7 @@ impl LibraryApp {
     /// Fluent ContentDialog: a smoke layer, a title, a body and two buttons.
     /// Returns Some(true) for the primary button (or Enter), Some(false) to
     /// close (Cancel, Escape or a click outside).
-    fn content_dialog(ctx: &egui::Context, t: &Tokens, title: &str, primary: &str, body: impl FnOnce(&mut egui::Ui)) -> Option<bool> {
+    fn content_dialog(ctx: &egui::Context, t: &Tokens, width: f32, title: &str, primary: &str, body: impl FnOnce(&mut egui::Ui)) -> Option<bool> {
         let screen = ctx.content_rect();
         let mut result = None;
         egui::Area::new(egui::Id::new("smoke")).fixed_pos(screen.min).order(egui::Order::Middle).show(ctx, |ui| {
@@ -943,7 +966,7 @@ impl LibraryApp {
                 .corner_radius(CornerRadius::same(theme::R_CARD))
                 .shadow(ui.visuals().window_shadow)
                 .show(ui, |ui| {
-                    ui.set_width(420.0);
+                    ui.set_width(width);
                     egui::Frame::new().inner_margin(Margin::same(24)).show(ui, |ui| {
                         ui.label(theme::subtitle(title).color(t.text));
                         ui.add_space(8.0);
@@ -981,7 +1004,7 @@ impl LibraryApp {
         let Some(paths) = self.confirm_delete.clone() else { return };
         let n = paths.len();
         let title = if n == 1 { "Delete this clip?".to_string() } else { format!("Delete {n} clips?") };
-        let Some(ok) = Self::content_dialog(ctx, t, &title, "Delete", |ui| {
+        let Some(ok) = Self::content_dialog(ctx, t, 420.0, &title, "Delete", |ui| {
             ui.label(RichText::new("They move to the Recycle Bin, so you can restore them.").color(t.text2));
         }) else {
             return;
@@ -1007,6 +1030,115 @@ impl LibraryApp {
         self.rescan(ctx);
     }
 
+    /// The montage dialog.
+    fn montage_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let Some(m) = &mut self.montage else { return };
+        let icons = self.shared.icons;
+        let result = Self::content_dialog(ctx, t, 560.0, "Make a montage", "Create montage", |ui| {
+            ui.label(RichText::new("The clips play in this order. Music plays under all of them.").color(t.text2));
+            ui.add_space(8.0);
+            let mut swap: Option<(usize, usize)> = None;
+            let mut remove = None;
+            let n = m.clips.len();
+            egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                for (i, p) in m.clips.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(theme::caption(format!("{}.", i + 1)).color(t.text3));
+                        let name = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                        ui.add_sized(Vec2::new(340.0, 24.0), egui::Label::new(RichText::new(name).color(t.text)).truncate());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if theme::subtle(ui, theme::label_with_icon(icons, icon::CANCEL, if icons { "" } else { "x" })).on_hover_text("Leave out").clicked() {
+                                remove = Some(i);
+                            }
+                            if ui.add_enabled(i + 1 < n, egui::Button::new("\u{2193}").frame_when_inactive(false)).on_hover_text("Later").clicked() {
+                                swap = Some((i, i + 1));
+                            }
+                            if ui.add_enabled(i > 0, egui::Button::new("\u{2191}").frame_when_inactive(false)).on_hover_text("Earlier").clicked() {
+                                swap = Some((i, i - 1));
+                            }
+                        });
+                    });
+                }
+            });
+            if let Some((a, b)) = swap {
+                m.clips.swap(a, b);
+            }
+            if let Some(i) = remove
+                && m.clips.len() > 1
+            {
+                m.clips.remove(i);
+            }
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Music").color(t.text));
+                let label = m.music.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "None".into());
+                ui.add(egui::Label::new(theme::caption(label).color(t.text2)).truncate());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if m.music.is_some() && theme::subtle(ui, "Remove").clicked() {
+                        m.music = None;
+                    }
+                    if theme::button(ui, "Choose music...", true).clicked()
+                        && let Some(p) = crate::sys::shell::pick_audio()
+                    {
+                        m.music = Some(p);
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            egui::Grid::new("montage-mix").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
+                ui.label(RichText::new("Game sound").color(t.text));
+                ui.spacing_mut().slider_width = 260.0;
+                ui.add(egui::Slider::new(&mut m.game_volume, 0..=200).show_value(false));
+                ui.label(theme::caption(format!("{}%", m.game_volume)).color(t.text2));
+                ui.end_row();
+                if m.music.is_some() {
+                    ui.label(RichText::new("Music").color(t.text));
+                    ui.add(egui::Slider::new(&mut m.music_volume, 0..=100).show_value(false));
+                    ui.label(theme::caption(format!("{}%", m.music_volume)).color(t.text2));
+                    ui.end_row();
+                    ui.label(RichText::new("Fade out at the end").color(t.text));
+                    theme::toggle(ui, t, &mut m.fade_out);
+                    ui.end_row();
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(theme::caption("Clips recorded with different settings are encoded again, which takes longer.").color(t.text3));
+        });
+        let Some(ok) = result else { return };
+        let m = self.montage.take().expect("open");
+        if !ok || m.clips.is_empty() {
+            return;
+        }
+        let segments: Vec<crate::edit::Segment> = m.clips.iter().map(|p| crate::edit::Segment { path: p.clone(), start: 0.0, end: f64::MAX }).collect();
+        let out = crate::edit::edited_name(&m.clips[0], "montage");
+        let a = &self.shared.cfg.audio;
+        let mix = crate::edit::Mix {
+            game: m.game_volume,
+            mic: a.microphone_volume,
+            keep_separate: true,
+            bitrate_kbps: a.bitrate_kbps,
+            music: m.music.map(|path| crate::edit::Music { path, volume: m.music_volume, fade_out: m.fade_out }),
+        };
+        let total: f64 = self.clips.iter().filter(|c| m.clips.contains(&c.path)).map(|c| c.duration).sum();
+        let label = format!("Making a montage of {} clips", segments.len());
+        self.shared.spawn_job(ctx, JobKind::Export, label, move |p| {
+            let paths: Vec<PathBuf> = segments.iter().map(|s| s.path.clone()).collect();
+            let video = if crate::edit::same_video_settings(&paths) {
+                crate::edit::VideoMode::Copy
+            } else {
+                match crate::edit::encode_spec(&paths[0], total, mix.bitrate_kbps * 4, &crate::edit::ExportChoice::default()) {
+                    Ok(s) => crate::edit::VideoMode::Encode(s),
+                    Err(e) => return JobDone::Failed(format!("Montage failed: {e}")),
+                }
+            };
+            match crate::edit::export(&segments, &out, &mix, &video, p) {
+                Ok(path) => JobDone::Exported(path),
+                Err(e) => JobDone::Failed(format!("Montage failed: {e}")),
+            }
+        });
+        self.checked.clear();
+    }
+
     /// Rename and tag dialogs.
     fn clip_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
         let Some(dialog) = &mut self.dialog else { return };
@@ -1014,7 +1146,7 @@ impl LibraryApp {
             ClipDialog::Rename(..) => ("Rename clip", "Rename"),
             ClipDialog::Tags(..) => ("Tags", "Save"),
         };
-        let result = Self::content_dialog(ctx, t, title, primary, |ui| match dialog {
+        let result = Self::content_dialog(ctx, t, 420.0, title, primary, |ui| match dialog {
             ClipDialog::Rename(_, name) => {
                 ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).margin(Margin::symmetric(10, 7))).request_focus();
             }
@@ -1116,6 +1248,7 @@ impl eframe::App for LibraryApp {
         self.info_bars(&ctx, &t);
         self.delete_dialog(&ctx, &t);
         self.clip_dialog(&ctx, &t);
+        self.montage_dialog(&ctx, &t);
     }
 
     /// Opaque window background, so nothing behind the window shows through.

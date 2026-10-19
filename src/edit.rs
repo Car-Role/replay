@@ -34,6 +34,47 @@ pub struct Mix {
     /// Also keep separate Game and Microphone tracks after the mix.
     pub keep_separate: bool,
     pub bitrate_kbps: u32,
+    /// A music file under the whole export.
+    pub music: Option<Music>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Music {
+    pub path: PathBuf,
+    /// Percent.
+    pub volume: u32,
+    /// Fade the music out over the last few seconds.
+    pub fade_out: bool,
+}
+
+/// Seconds of the music fade in and fade out.
+const FADE_IN: f64 = 0.5;
+const FADE_OUT: f64 = 3.0;
+
+/// Music shaped to `frames` frames: cut (or padded with silence), volume and fades.
+fn shape_music(pcm: &[i16], frames: usize, m: &Music) -> Vec<i16> {
+    let ch = CHANNELS as usize;
+    let mut out = vec![0i16; frames * ch];
+    let n = pcm.len().min(out.len());
+    out[..n].copy_from_slice(&pcm[..n]);
+    let rate = f64::from(SAMPLE_RATE);
+    let fade_in = (FADE_IN * rate) as usize;
+    let fade_out = if m.fade_out { ((FADE_OUT * rate) as usize).min(frames / 2) } else { 0 };
+    let music_end = (n / ch).min(frames);
+    for f in 0..music_end {
+        let mut g = f64::from(m.volume) / 100.0;
+        if f < fade_in {
+            g *= f as f64 / fade_in as f64;
+        }
+        if fade_out > 0 && f + fade_out > frames {
+            g *= (frames - f) as f64 / fade_out as f64;
+        }
+        for c in 0..ch {
+            let v = &mut out[f * ch + c];
+            *v = (f64::from(*v) * g).clamp(-32768.0, 32767.0) as i16;
+        }
+    }
+    out
 }
 
 /// How the video of an export is made.
@@ -280,7 +321,7 @@ pub fn export(segments: &[Segment], out: &Path, mix: &Mix, video: &VideoMode, pr
         progress(0.4 * (si + 1) as f32 / files.len() as f32);
     }
 
-    let audio = mix_audio(game_pcm, mic_pcm, mix)?;
+    let audio = mix_audio(game_pcm, mic_pcm, total_frames, mix)?;
     progress(0.6);
 
     // Video track from the plan (samples are already in MP4 format).
@@ -349,9 +390,31 @@ fn decode_segments(files: &[Mp4In], segments: &[Segment], ranges: &[(f64, f64)],
 }
 
 /// Mixes and encodes the audio tracks of an export.
-fn mix_audio(game_pcm: Option<Vec<i16>>, mic_pcm: Option<Vec<i16>>, mix: &Mix) -> Result<Vec<AudioTrackData>, String> {
-    let mut audio: Vec<AudioTrackData> = Vec::new();
+fn mix_audio(game_pcm: Option<Vec<i16>>, mic_pcm: Option<Vec<i16>>, frames: usize, mix: &Mix) -> Result<Vec<AudioTrackData>, String> {
     let enc = |name: &str, pcm: &[i16]| encode_track(name, pcm, mix.bitrate_kbps);
+    if let Some(m) = &mix.music {
+        let raw = crate::sys::player::decode_audio_file(&m.path)?;
+        let music = shape_music(&raw, frames, m);
+        let mut mixed = music.clone();
+        if let Some(g) = &game_pcm {
+            mix_into(&mut mixed, g, 100, mix.game);
+        }
+        if let Some(mi) = &mic_pcm {
+            mix_into(&mut mixed, mi, 100, mix.mic);
+        }
+        let mut audio = vec![enc("Mix", &mixed)?];
+        if mix.keep_separate {
+            if let Some(g) = &game_pcm {
+                audio.push(enc("Game", g)?);
+            }
+            if let Some(mi) = &mic_pcm {
+                audio.push(enc("Microphone", mi)?);
+            }
+            audio.push(enc("Music", &music)?);
+        }
+        return Ok(audio);
+    }
+    let mut audio: Vec<AudioTrackData> = Vec::new();
     match (&game_pcm, &mic_pcm) {
         (Some(g), Some(m)) => {
             let mut mixed = vec![0i16; g.len()];
@@ -465,7 +528,7 @@ fn export_encoded(segments: &[Segment], out: &Path, mix: &Mix, spec: &EncodeSpec
     // Audio.
     let audio = (|| {
         let (g, m) = decode_segments(&files, segments, &ranges, &|f| progress(0.85 + 0.05 * f))?;
-        mix_audio(g, m, mix)
+        mix_audio(g, m, (total * f64::from(SAMPLE_RATE)).round() as usize, mix)
     })();
     let audio = match audio {
         Ok(a) => a,
@@ -546,6 +609,20 @@ mod tests {
             start_offset: 0,
             enabled: true,
         }
+    }
+
+    #[test]
+    fn music_is_cut_and_faded() {
+        let m = Music { path: PathBuf::new(), volume: 50, fade_out: true };
+        let pcm = vec![1000i16; 48_000 * 2 * 10];
+        let out = shape_music(&pcm, 48_000 * 6, &m);
+        assert_eq!(out.len(), 48_000 * 2 * 6);
+        assert_eq!(out[0], 0, "fades in");
+        assert_eq!(out[48_000 * 2], 500, "half volume after the fade in");
+        assert!(out[out.len() - 2].abs() < 5, "faded out at the end");
+        // Short music leaves silence after it.
+        let short = shape_music(&pcm[..48_000 * 2], 48_000 * 3, &m);
+        assert_eq!(short[48_000 * 2 * 2], 0);
     }
 
     #[test]

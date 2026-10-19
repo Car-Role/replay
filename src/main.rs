@@ -87,7 +87,8 @@ replay --settings              open the library on the Settings tab
 replay --save | --save-all     ask the running recorder to save a replay
 replay --record                start or stop recording the game in front
 replay --trim <file> <a> <b>   save a trimmed copy (seconds)
-replay --join <file>...        join clips with the same video settings
+replay --join <file>... [--music <file>]
+                               join clips with the same video settings
 replay --export <file> <a> <b> [--size MB] [--vertical 0..1] [--codec h264|hevc|av1]
                                re-encode a part of a clip (exact cut)
 replay --probe                 show capture and encoder support
@@ -163,6 +164,7 @@ fn export_cli(args: &[String]) -> bool {
         mic: cfg.audio.microphone_volume,
         keep_separate: !small,
         bitrate_kbps: if small { 128 } else { cfg.audio.bitrate_kbps },
+        music: None,
     };
     let seg = vec![edit::Segment { path: p.into(), start, end }];
     let out = edit::edited_name(std::path::Path::new(p), "export");
@@ -188,12 +190,22 @@ fn edit_cli(mode: &str, args: &[String]) -> bool {
         };
         vec![edit::Segment { path: p.into(), start: a.parse().unwrap_or(0.0), end: b.parse().unwrap_or(f64::MAX) }]
     } else {
-        args[1..].iter().map(|p| edit::Segment { path: p.into(), start: 0.0, end: f64::MAX }).collect()
+        let mut skip = false;
+        args[1..]
+            .iter()
+            .filter(|a| {
+                let keep = !skip && *a != "--music";
+                skip = *a == "--music";
+                keep
+            })
+            .map(|p| edit::Segment { path: p.into(), start: 0.0, end: f64::MAX })
+            .collect()
     };
+    let music = args.iter().position(|a| a == "--music").and_then(|i| args.get(i + 1)).map(|p| edit::Music { path: p.into(), volume: 60, fade_out: true });
     let Some(first) = segments.first() else { return false };
     let out = edit::edited_name(&first.path, if mode == "--trim" { "trim" } else { "joined" });
     let cfg = config::Config::load();
-    let mix = edit::Mix { game: cfg.audio.game_volume, mic: cfg.audio.microphone_volume, keep_separate: true, bitrate_kbps: cfg.audio.bitrate_kbps };
+    let mix = edit::Mix { game: cfg.audio.game_volume, mic: cfg.audio.microphone_volume, keep_separate: true, bitrate_kbps: cfg.audio.bitrate_kbps, music };
     let t = std::time::Instant::now();
     match edit::export(&segments, &out, &mix, &edit::VideoMode::Copy, &|_| {}) {
         Ok(p) => {

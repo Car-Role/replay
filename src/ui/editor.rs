@@ -747,7 +747,7 @@ impl Editor {
             if ui.add_enabled(!busy, b).clicked() {
                 let seg = vec![Segment { path: self.path.clone(), start: self.in_point, end: self.out_point }];
                 let out = edit::edited_name(&self.path, "edit");
-                let mix = Mix { game: self.game_gain, mic: self.mic_gain, keep_separate: self.keep_separate, bitrate_kbps: shared.cfg.audio.bitrate_kbps };
+                let mix = Mix { game: self.game_gain, mic: self.mic_gain, keep_separate: self.keep_separate, bitrate_kbps: shared.cfg.audio.bitrate_kbps, music: None };
                 let exact = self.exact;
                 let (src, secs) = (self.path.clone(), self.out_point - self.in_point);
                 shared.spawn_job(&ctx, JobKind::Export, "Saving clip".into(), move |p| {
@@ -904,6 +904,7 @@ impl Editor {
                     // Size targets keep only the mixed track; every bit goes to the picture.
                     keep_separate: self.keep_separate && !small,
                     bitrate_kbps: if small { 128 } else { shared.cfg.audio.bitrate_kbps },
+                    music: None,
                 };
                 let label = format!("Exporting {}", theme::fmt_short(secs));
                 shared.spawn_job(&ctx, JobKind::Export, label, move |p| match edit::export(&seg, &out, &mix, &edit::VideoMode::Encode(spec), p) {

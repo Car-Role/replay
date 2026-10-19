@@ -188,6 +188,90 @@ fn decode_loop(path: &Path, cmd: &Receiver<Cmd>, out: &SyncSender<Frame>, wake: 
     }
 }
 
+/// Decodes a music file (MP3, AAC, WAV, FLAC, WMA) to 48 kHz stereo PCM.
+pub fn decode_audio_file(path: &Path) -> Result<Vec<i16>, String> {
+    const FIRST_AUDIO: u32 = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
+    unsafe {
+        let reader = MFCreateSourceReaderFromURL(&HSTRING::from(path.as_os_str()), None).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+        let _ = reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false);
+        reader.SetStreamSelection(FIRST_AUDIO, true).map_err(|_| "the file has no audio".to_string())?;
+        let want = |rate: Option<u32>| -> windows::core::Result<IMFMediaType> {
+            let t = MFCreateMediaType()?;
+            t.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)?;
+            t.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_PCM)?;
+            t.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)?;
+            if let Some(r) = rate {
+                t.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, r)?;
+                t.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, CHANNELS)?;
+                t.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, CHANNELS * 2)?;
+                t.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, r * CHANNELS * 2)?;
+            }
+            Ok(t)
+        };
+        // Ask for 48 kHz stereo; if the reader cannot convert, take its PCM and convert here.
+        let exact = want(Some(SAMPLE_RATE)).and_then(|t| reader.SetCurrentMediaType(FIRST_AUDIO, None, &t)).is_ok();
+        if !exact {
+            let t = want(None).map_err(|e| e.to_string())?;
+            reader.SetCurrentMediaType(FIRST_AUDIO, None, &t).map_err(|e| format!("this audio cannot be decoded: {e}"))?;
+        }
+        let cur = reader.GetCurrentMediaType(FIRST_AUDIO).map_err(|e| e.to_string())?;
+        let rate = cur.GetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND).unwrap_or(SAMPLE_RATE);
+        let chans = cur.GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS).unwrap_or(CHANNELS).max(1);
+        let mut pcm: Vec<i16> = Vec::new();
+        loop {
+            let mut flags = 0u32;
+            let mut sample = None;
+            reader.ReadSample(FIRST_AUDIO, 0, None, Some(&mut flags), None, Some(&mut sample)).map_err(|e| e.to_string())?;
+            if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
+                break;
+            }
+            let Some(sample) = sample else { continue };
+            let buf = sample.ConvertToContiguousBuffer().map_err(|e| e.to_string())?;
+            let mut p = std::ptr::null_mut();
+            let mut len = 0;
+            buf.Lock(&mut p, None, Some(&mut len)).map_err(|e| e.to_string())?;
+            let s = std::slice::from_raw_parts(p.cast::<i16>(), len as usize / 2);
+            pcm.extend_from_slice(s);
+            let _ = buf.Unlock();
+            if pcm.len() > 48_000 * 2 * 60 * 60 {
+                return Err("the music file is longer than an hour".into());
+            }
+        }
+        Ok(to_48k_stereo(&pcm, rate, chans))
+    }
+}
+
+/// Converts interleaved PCM to 48 kHz stereo (linear resampling).
+pub fn to_48k_stereo(pcm: &[i16], rate: u32, chans: u32) -> Vec<i16> {
+    let chans = chans.max(1) as usize;
+    let frames = pcm.len() / chans;
+    let stereo = |i: usize| -> (i32, i32) {
+        let f = &pcm[i * chans..i * chans + chans];
+        if chans == 1 { (i32::from(f[0]), i32::from(f[0])) } else { (i32::from(f[0]), i32::from(f[1])) }
+    };
+    if rate == SAMPLE_RATE {
+        let mut out = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let (l, r) = stereo(i);
+            out.push(l as i16);
+            out.push(r as i16);
+        }
+        return out;
+    }
+    let out_frames = (frames as u64 * u64::from(SAMPLE_RATE) / u64::from(rate.max(1))) as usize;
+    let mut out = Vec::with_capacity(out_frames * 2);
+    for j in 0..out_frames {
+        let pos = j as f64 * f64::from(rate) / f64::from(SAMPLE_RATE);
+        let i = pos as usize;
+        let frac = pos - i as f64;
+        let (l0, r0) = stereo(i.min(frames - 1));
+        let (l1, r1) = stereo((i + 1).min(frames - 1));
+        out.push((f64::from(l0) + (f64::from(l1 - l0)) * frac) as i16);
+        out.push((f64::from(r0) + (f64::from(r1 - r0)) * frac) as i16);
+    }
+    out
+}
+
 // ------------------------------------------------------------------ audio
 
 struct Shared {
