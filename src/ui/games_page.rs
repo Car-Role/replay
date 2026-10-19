@@ -142,9 +142,9 @@ impl LibraryApp {
         let enabled: Vec<&str> = list.iter().filter(|g| games::is_enabled(&self.shared.cfg.detection, &g.exe)).map(|g| g.exe.as_str()).collect();
         let sentence = match enabled.len() {
             0 => "Replay finds games by itself. Turn off any you don't want recorded.".to_string(),
-            1 => format!("While it records, Replay uses about {} of memory.", theme::fmt_bytes(self.shared.cfg.recording_memory(&enabled))),
+            1 => format!("While a replay is on, Replay uses about {} of memory.", theme::fmt_bytes(self.shared.cfg.recording_memory(&enabled))),
             n => format!(
-                "One game uses up to {} of memory while it records; all {n} at once would use {}.",
+                "One game with a replay on uses up to {} of memory; all {n} at once would use {}.",
                 theme::fmt_bytes(enabled.iter().map(|e| self.shared.cfg.recording_memory(&[e])).max().unwrap_or(0)),
                 theme::fmt_bytes(self.shared.cfg.recording_memory(&enabled))
             ),
@@ -247,7 +247,7 @@ impl LibraryApp {
             }
             if g.recording {
                 let secs = self.shared.cfg.for_game(&g.exe).replay_seconds;
-                parts.insert(0, format!("Buffering {}", theme::fmt_short(f64::from(secs))));
+                parts.insert(0, format!("Keeping {}", theme::fmt_short(f64::from(secs))));
             }
             if enabled && g.recording {
                 // "Buffering 2:00" already says the length.

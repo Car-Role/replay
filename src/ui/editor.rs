@@ -1109,8 +1109,9 @@ impl Editor {
         };
         ui.label(theme::caption(line).color(t.text2));
         // Always one note line, so the button never moves.
-        let (note, color) = if !copy && spec.bitrate_kbps < 800 {
-            ("Long for this size: the picture will be soft. Trim it shorter.".to_string(), t.caution)
+        let soft = !copy && spec.bitrate_kbps < 800;
+        let (note, color) = if soft {
+            (format!("Long for this size, so it is saved at {oh}p and may look soft. Trim it shorter or pick a bigger size."), t.text)
         } else if !copy {
             ("Encoded as H.264, so it plays on every phone and site.".to_string(), t.text3)
         } else if self.exact {
@@ -1118,7 +1119,11 @@ impl Editor {
         } else {
             (format!("Copied as {}, so nothing is lost.", self.codec), t.text3)
         };
-        ui.add(egui::Label::new(theme::caption(note).color(color)).truncate());
+        if soft {
+            theme::caution(ui, &t, icons, &note, None);
+        } else {
+            ui.add(egui::Label::new(theme::caption(note).color(color)).truncate());
+        }
         let b = egui::Button::new(theme::label_with_icon(icons, icon::SAVE, "Save a copy")).min_size(Vec2::new(ui.available_width(), theme::CONTROL_H));
         if ui.add_enabled(!busy, b).clicked() {
             let seg = vec![Segment { path: self.path.clone(), start: self.in_point, end: self.out_point }];

@@ -59,6 +59,8 @@ pub struct Tokens {
     pub recording: Color32,
     pub success: Color32,
     pub caution: Color32,
+    /// The background of a caution InfoBar.
+    pub caution_bg: Color32,
     pub critical: Color32,
     pub smoke: Color32,
 }
@@ -111,6 +113,7 @@ pub const DARK: Tokens = Tokens {
     recording: argb(0xFFFF_4D4F),
     success: argb(0xFF6C_CB5F),
     caution: argb(0xFFFC_E100),
+    caution_bg: argb(0xFF43_3519),
     critical: argb(0xFFFF_99A4),
     smoke: argb(0x4D00_0000),
 };
@@ -145,6 +148,7 @@ pub const LIGHT: Tokens = Tokens {
     recording: argb(0xFFD1_3438),
     success: argb(0xFF0F_7B0F),
     caution: argb(0xFF9D_5D00),
+    caution_bg: argb(0xFFFF_F4CE),
     critical: argb(0xFFC4_2B1C),
     smoke: argb(0x4D00_0000),
 };
@@ -210,6 +214,7 @@ pub mod icon {
     pub const CHEVRON_DOWN: char = '\u{E70D}';
     pub const CHEVRON_UP: char = '\u{E70E}';
     pub const STOPWATCH: char = '\u{E916}';
+    pub const WARNING: char = '\u{E7BA}';
     pub const MONITOR: char = '\u{E7F4}';
     pub const PICTURE: char = '\u{E8B9}';
     pub const MOUSE: char = '\u{E962}';
@@ -682,6 +687,35 @@ pub fn idea_chip(ui: &mut Ui, t: &Tokens, tag: &str) -> Response {
     focus_ring(ui, t, &resp, r, 14.0);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Add tag {tag}")));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A caution InfoBar (Fluent pattern): a tinted bar, the warning glyph in the
+/// caution color and the sentence in primary text, full width. An optional
+/// action sits under the sentence; returns true when it is clicked.
+pub fn caution(ui: &mut Ui, t: &Tokens, icons: bool, text: &str, action: Option<&str>) -> bool {
+    let mut clicked = false;
+    egui::Frame::new()
+        .fill(t.caution_bg)
+        .corner_radius(CornerRadius::same(R_CONTROL))
+        .inner_margin(egui::Margin::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if icons {
+                    ui.label(glyph(icon::WARNING, 16.0).color(t.caution));
+                }
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.add(egui::Label::new(caption(text).color(t.text)).wrap());
+                    if let Some(a) = action {
+                        let b = egui::Button::new(caption(a).color(t.accent)).frame_when_inactive(false).min_size(Vec2::new(0.0, 24.0));
+                        clicked = ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+                    }
+                });
+            });
+        });
+    clicked
 }
 
 /// A 32 px subtle icon button (no fill or edge until hover).

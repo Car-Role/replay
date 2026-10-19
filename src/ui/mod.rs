@@ -1009,9 +1009,16 @@ impl LibraryApp {
             let limit = discord_mb;
             let soft = m.size_mb.is_some_and(|s| crate::edit::size_target(f64::from(s), total, 128).0 < 800);
             if soft {
-                ui.label(theme::caption(format!("{} is long for this size, so the picture will be soft. Pick a bigger size or fewer clips.", theme::fmt_short(total))).color(t.caution));
+                let size = m.size_mb.unwrap_or(limit);
+                let h = crate::edit::size_target(f64::from(size), total, 128).1.unwrap_or(1080);
+                let text = format!("{} is long for {size} MB, so it is saved at {h}p and may look soft.", theme::fmt_short(total));
+                let text = format!("{text} Pick a bigger size or fewer clips.");
+                let fix = (size < 50).then_some("Use 50 MB instead");
+                if theme::caution(ui, t, icons, &text, fix) {
+                    m.size_mb = Some(50);
+                }
             } else if m.size_mb.is_none() && mb > f64::from(limit) {
-                ui.label(theme::caption(format!("Too big for Discord ({limit} MB). Pick a Discord size to share it there.")).color(t.caution));
+                theme::caution(ui, t, icons, &format!("Too big for Discord ({limit} MB). Pick a Discord size to share it there."), None);
             } else {
                 let note = if m.vertical {
                     "Vertical uses each clip's framing from the editor, or the centre. Encoding again takes longer."
