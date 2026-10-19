@@ -670,7 +670,7 @@ impl Editor {
             ui.label(theme::body_strong("Share").color(t.text));
             ui.add_space(4.0);
             if ui
-                .add_sized(full(ui), egui::Button::new(theme::label_with_icon(icons, icon::COPY, "Copy file")))
+                .add(egui::Button::new(theme::label_with_icon(icons, icon::COPY, "Copy file")).min_size(full(ui)))
                 .on_hover_text("Then paste it into Discord, Slack or a folder")
                 .clicked()
             {
@@ -699,7 +699,7 @@ impl Editor {
                     }
                 });
             }
-            if ui.add_sized(full(ui), egui::Button::new(theme::label_with_icon(icons, icon::FOLDER, "Show in folder"))).clicked() {
+            if ui.add(egui::Button::new(theme::label_with_icon(icons, icon::FOLDER, "Show in folder")).min_size(full(ui))).clicked() {
                 crate::sys::shell::reveal(&self.path);
             }
             ui.add_space(4.0);

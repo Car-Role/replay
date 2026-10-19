@@ -741,6 +741,12 @@ impl eframe::App for LibraryApp {
         self.info_bars(&ctx, &t);
         self.delete_dialog(&ctx, &t);
     }
+
+    /// Opaque window background, so nothing behind the window shows through.
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        let c = if visuals.dark_mode { theme::DARK.base } else { theme::LIGHT.base };
+        [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0, 1.0]
+    }
 }
 
 /// System thumbnail, or a frame decoded from the clip when the system has none.
