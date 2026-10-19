@@ -128,6 +128,9 @@ pub struct Editor {
     last_scrub: Instant,
     film_rx: Option<Receiver<Thumb>>,
     film: Vec<Option<TextureHandle>>,
+    /// Height of the pinned save footer, measured last frame. The scroll area
+    /// above gives up this much, so the card never grows past the video.
+    footer_h: f32,
     /// Peak level (0..1) per slice of the clip, for the waveform strip.
     waveform: Vec<f32>,
     /// The name while it is being edited in the command bar.
@@ -225,6 +228,7 @@ impl Editor {
             last_scrub: Instant::now(),
             film_rx,
             film: (0..THUMBS).map(|_| None).collect(),
+            footer_h: 112.0,
             waveform: Vec::new(),
             name_edit: None,
             codec,
@@ -240,6 +244,11 @@ impl Editor {
         if let Some(c) = c {
             self.crop_center = c.clamp(0.0, 1.0);
         }
+    }
+
+    /// True while filmstrip thumbnails are still decoding.
+    pub fn loading(&self) -> bool {
+        self.film_rx.is_some()
     }
 
     /// For `--snapshot`: show the vertical export with its crop frame.
@@ -922,7 +931,7 @@ impl Editor {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.set_min_height(ui.available_height());
-                let footer_h = 112.0;
+                let footer_h = self.footer_h;
                 let out = egui::ScrollArea::vertical()
                     .id_salt("inspector")
                     .auto_shrink([false, false])
@@ -1028,9 +1037,17 @@ impl Editor {
                     }
                 }
                 // Pinned footer: what comes out, and the button that saves it.
+                let start = ui.cursor().top();
                 let (d, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 9.0), Sense::hover());
                 ui.painter().line_segment([Pos2::new(d.left() - 16.0, d.center().y), Pos2::new(d.right() + 16.0, d.center().y)], Stroke::new(1.0, t.divider));
                 self.save_footer(ui, t, icons, shared, busy);
+                // A warning makes the footer taller: take the room from the
+                // scroll area next frame, so the card keeps its bottom edge.
+                let need = (ui.cursor().top() - start + ui.spacing().item_spacing.y).max(112.0);
+                if (need - self.footer_h).abs() > 0.5 {
+                    self.footer_h = need;
+                    ui.ctx().request_discard("inspector footer height");
+                }
             });
         None
     }
@@ -1117,7 +1134,12 @@ impl Editor {
         // Always one note line, so the button never moves.
         let soft = !copy && spec.bitrate_kbps < 800;
         let (note, color) = if soft {
-            (format!("Long for {:.0} MB, so it is saved at {oh}p and may look soft. Trim it or pick a bigger size.", size_mb.unwrap_or(0.0)), t.text)
+            {
+            // The estimate line above already shows the output size.
+            let mb = size_mb.unwrap_or(0.0);
+            let tail = if matches!(self.preset, Preset::Discord10) { "" } else { " Trim it shorter or pick a bigger size." };
+            (format!("{} is long for {mb:.0} MB, so it may look soft.{tail}", theme::fmt_short(secs)), t.text)
+        }
         } else if !copy {
             ("Encoded as H.264, so it plays on every phone and site.".to_string(), t.text3)
         } else if self.exact {

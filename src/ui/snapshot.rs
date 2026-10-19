@@ -108,6 +108,11 @@ impl LibraryApp {
         if entered.elapsed() < Duration::from_millis(settle) {
             return;
         }
+        // The editor waits for its whole filmstrip (at most 30 s).
+        if matches!(step, Step::Editor) && self.editor.as_ref().is_some_and(|e| e.loading()) && entered.elapsed() < Duration::from_secs(30) {
+            ctx.request_repaint_after(Duration::from_millis(100));
+            return;
+        }
         let snap = self.snapshot.as_mut().expect("set");
         let path = snap.dir.join(format!("{name}.png"));
         let saved = snap.saved.clone();
