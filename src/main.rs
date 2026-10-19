@@ -51,6 +51,10 @@ fn main() {
             sys::init_tool();
             std::process::exit(if edit_cli(mode, &args) { 0 } else { 1 });
         }
+        "--check-update" => {
+            logger::init("probe", false);
+            std::process::exit(if check_update_cli(&args) { 0 } else { 1 });
+        }
         "--version" | "-V" => println!("replay {}", env!("CARGO_PKG_VERSION")),
         "--help" | "-h" => println!("{}", HELP),
         _ => {
@@ -75,7 +79,40 @@ replay --probe                 show capture and encoder support
 replay --detect                show which open windows count as games
 replay --selftest [s] [codec]  record the screen and check the result
 replay --verify <file>         read a clip back and report each track
+replay --check-update          download and verify a newer release, if any
+       [--as-version <x.y.z>]  act as that version (for testing)
 replay --version";
+
+/// Downloads and verifies the latest release without installing it.
+fn check_update_cli(args: &[String]) -> bool {
+    let current = match args.iter().position(|a| a == "--as-version") {
+        Some(i) => args.get(i + 1).map(String::as_str).unwrap_or(update::CURRENT),
+        None => update::CURRENT,
+    };
+    match update::check_against(current) {
+        Ok(None) => {
+            println!("No release is newer than {current}.");
+            true
+        }
+        Ok(Some(rel)) => {
+            println!("Release {} is newer than {current}. Downloading...", rel.version);
+            match update::download(&rel, &|_, _| {}) {
+                Ok(staged) => {
+                    println!("OK: signature and hash verified. Staged at {}", staged.file.display());
+                    true
+                }
+                Err(e) => {
+                    println!("FAILED: {e}");
+                    false
+                }
+            }
+        }
+        Err(e) => {
+            println!("FAILED: {e}");
+            false
+        }
+    }
+}
 
 fn edit_cli(mode: &str, args: &[String]) -> bool {
     let segments: Vec<edit::Segment> = if mode == "--trim" {

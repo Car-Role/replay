@@ -79,6 +79,11 @@ fn headers() -> Vec<(String, String)> {
 
 /// Returns the latest release when it is newer than this program.
 pub fn check() -> Result<Option<Release>, String> {
+    check_against(CURRENT)
+}
+
+/// Returns the latest release when it is newer than `current`.
+pub fn check_against(current: &str) -> Result<Option<Release>, String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let r = net::request("GET", &url, &headers(), &[], &|_, _| {})?;
     if r.status == 404 {
@@ -89,7 +94,7 @@ pub fn check() -> Result<Option<Release>, String> {
     }
     let v: serde_json::Value = serde_json::from_slice(&r.body).map_err(|e| format!("unexpected reply from GitHub: {e}"))?;
     let tag = v["tag_name"].as_str().unwrap_or_default().to_string();
-    if v["draft"].as_bool() == Some(true) || v["prerelease"].as_bool() == Some(true) || !is_newer(&tag, CURRENT) {
+    if v["draft"].as_bool() == Some(true) || v["prerelease"].as_bool() == Some(true) || !is_newer(&tag, current) {
         return Ok(None);
     }
     let find = |name: &str| {
