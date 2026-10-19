@@ -36,6 +36,8 @@ pub struct Tokens {
     pub control_hover: Color32,
     pub control_pressed: Color32,
     pub control_stroke: Color32,
+    /// Edges of inputs, combo boxes and buttons: 3:1 against the page.
+    pub edge: Color32,
     /// SubtleFillColorSecondary / Tertiary (hover/press on transparent controls).
     pub subtle_hover: Color32,
     pub subtle_pressed: Color32,
@@ -90,6 +92,7 @@ pub const DARK: Tokens = Tokens {
     control_hover: argb(0x17FF_FFFF),
     control_pressed: argb(0x0AFF_FFFF),
     control_stroke: argb(0x17FF_FFFF),
+    edge: argb(0xFF6A_6A6A),
     subtle_hover: argb(0x0FFF_FFFF),
     subtle_pressed: argb(0x0AFF_FFFF),
     strong: argb(0x8BFF_FFFF),
@@ -125,6 +128,7 @@ pub const LIGHT: Tokens = Tokens {
     control_hover: argb(0x80F9_F9F9),
     control_pressed: argb(0x4DF9_F9F9),
     control_stroke: argb(0x2900_0000),
+    edge: argb(0xFF8A_8A8A),
     subtle_hover: argb(0x0900_0000),
     subtle_pressed: argb(0x0600_0000),
     strong: argb(0x7200_0000),
@@ -155,6 +159,9 @@ pub const R_CARD: u8 = 8;
 /// Page margin for windows wider than 640 px.
 pub const GUTTER: f32 = 24.0;
 pub const CONTROL_H: f32 = 32.0;
+/// Width of the control column in settings rows; controls end on the right
+/// edge and start on the same left edge.
+pub const CONTROL_COL: f32 = 260.0;
 
 pub const SEMIBOLD: &str = "semibold";
 pub const ICONS: &str = "icons";
@@ -201,6 +208,9 @@ pub mod icon {
     pub const TAG: char = '\u{E8EC}';
     pub const CHEVRON_RIGHT: char = '\u{E76C}';
     pub const CHEVRON_DOWN: char = '\u{E70D}';
+    pub const CHEVRON_UP: char = '\u{E70E}';
+    pub const UP: char = '\u{E74A}';
+    pub const DOWN: char = '\u{E74B}';
     pub const EDIT: char = '\u{E70F}';
     pub const LOOP: char = '\u{E8EE}';
     pub const STAR_FILLED: char = '\u{E735}';
@@ -276,7 +286,7 @@ fn visuals(t: &Tokens) -> egui::Visuals {
     v.text_edit_bg_color = Some(if t.dark { argb(0xB31E_1E1E) } else { argb(0xFFFF_FFFF) });
     v.faint_bg_color = t.card_alt;
     v.hyperlink_color = t.accent;
-    v.selection.bg_fill = t.accent.gamma_multiply(0.45);
+    v.selection.bg_fill = t.accent;
     v.selection.stroke = Stroke::new(1.0, t.accent);
     v.warn_fg_color = t.caution;
     v.error_fg_color = t.critical;
@@ -293,22 +303,23 @@ fn visuals(t: &Tokens) -> egui::Visuals {
     w.noninteractive.bg_stroke = Stroke::new(1.0, t.divider);
     w.noninteractive.fg_stroke = Stroke::new(1.0, t.text);
     w.noninteractive.corner_radius = r;
-    // Slider thumbs and check marks use the accent, as in Fluent.
-    w.inactive.bg_fill = t.accent;
+    // Slider rails are neutral; the filled part (selection) and the thumb
+    // on hover use the accent. Control edges reach 3:1 against the page.
+    w.inactive.bg_fill = if t.dark { argb(0xFF8A_8A8A) } else { argb(0xFF86_8686) };
     w.inactive.weak_bg_fill = t.control;
-    w.inactive.bg_stroke = Stroke::new(1.0, t.control_stroke);
+    w.inactive.bg_stroke = Stroke::new(1.0, t.edge);
     w.inactive.fg_stroke = Stroke::new(1.0, t.text);
     w.inactive.corner_radius = r;
     w.inactive.expansion = 0.0;
     w.hovered.bg_fill = t.accent_hover;
     w.hovered.weak_bg_fill = t.control_hover;
-    w.hovered.bg_stroke = Stroke::new(1.0, t.control_stroke);
+    w.hovered.bg_stroke = Stroke::new(1.0, t.edge);
     w.hovered.fg_stroke = Stroke::new(1.0, t.text);
     w.hovered.corner_radius = r;
     w.hovered.expansion = 0.0;
     w.active.bg_fill = t.accent;
     w.active.weak_bg_fill = t.control_pressed;
-    w.active.bg_stroke = Stroke::new(1.0, t.control_stroke);
+    w.active.bg_stroke = Stroke::new(1.0, t.edge);
     w.active.fg_stroke = Stroke::new(1.0, t.text2);
     w.active.corner_radius = r;
     w.active.expansion = 0.0;
@@ -324,7 +335,7 @@ fn style(base: &egui::Style) -> egui::Style {
         (TextStyle::Small, FontId::new(12.0, Proportional)),
         (TextStyle::Body, FontId::new(14.0, Proportional)),
         (TextStyle::Button, FontId::new(14.0, Proportional)),
-        (TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace)),
+        (TextStyle::Monospace, FontId::new(14.0, Proportional)),
         (TextStyle::Heading, FontId::new(28.0, semi)),
     ]
     .into();
@@ -397,11 +408,15 @@ pub fn setting_frame(t: &Tokens) -> egui::Frame {
 
 /// Button content: an icon glyph (when the icon font exists) and a label.
 pub fn label_with_icon(icons: bool, c: char, text: &str) -> WidgetText {
+    icon_label(icons, c, text, Color32::PLACEHOLDER)
+}
+
+/// Like `label_with_icon`, in a fixed color (for text on the accent).
+pub fn icon_label(icons: bool, c: char, text: &str, color: Color32) -> WidgetText {
     if !icons {
-        return text.into();
+        return RichText::new(text).color(color).into();
     }
     let mut job = egui::text::LayoutJob::default();
-    let color = Color32::PLACEHOLDER;
     job.append(&c.to_string(), 0.0, egui::TextFormat { font_id: FontId::new(16.0, FontFamily::Name(ICONS.into())), color, valign: egui::Align::Center, ..Default::default() });
     if !text.is_empty() {
         job.append(text, 8.0, egui::TextFormat { font_id: FontId::new(14.0, FontFamily::Proportional), color, valign: egui::Align::Center, ..Default::default() });
@@ -451,7 +466,8 @@ pub fn toggle(ui: &mut Ui, t: &Tokens, on: &mut bool) -> Response {
     let x = egui::lerp((rect.left() + r)..=(rect.right() - r), how_on);
     let knob = if *on { t.on_accent } else { t.strong };
     p.circle_filled(egui::pos2(x, rect.center().y), knob_r, knob);
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CheckBox, ui.is_enabled(), *on, ""));
+    focus_ring(ui, t, &resp, rect, r);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CheckBox, ui.is_enabled(), *on, if *on { "On" } else { "Off" }));
     resp
 }
 
@@ -467,27 +483,34 @@ pub fn setting(
     control: impl FnOnce(&mut Ui),
 ) {
     setting_frame(t).show(ui, |ui| {
-        ui.set_min_height(44.0);
+        ui.set_min_height(40.0);
         ui.horizontal(|ui| {
             // Every row keeps the icon column, so all titles line up.
             if icons {
-                match glyph_char {
-                    Some(c) => {
-                        ui.add_sized(Vec2::new(28.0, 40.0), egui::Label::new(glyph(c, 18.0).color(t.text)));
-                    }
-                    None => {
-                        ui.add_space(28.0);
-                    }
+                let (r, _) = ui.allocate_exact_size(Vec2::new(28.0, 40.0), Sense::hover());
+                if let Some(c) = glyph_char {
+                    ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, c, FontId::new(18.0, FontFamily::Name(ICONS.into())), t.text);
                 }
                 ui.add_space(4.0);
             }
-            ui.vertical(|ui| {
-                ui.add_space(2.0);
-                ui.label(RichText::new(title_text).color(t.text));
-                if !description.is_empty() {
-                    ui.label(caption(description).color(t.text2));
-                }
-            });
+            // Text column: leaves room for the control column on the right.
+            let text_w = (ui.available_width() - CONTROL_COL - 16.0).max(160.0);
+            let (text_rect, _) = ui.allocate_exact_size(Vec2::new(text_w, 40.0), Sense::hover());
+            let mut tu = ui.new_child(egui::UiBuilder::new().max_rect(text_rect).layout(egui::Layout::top_down(egui::Align::Min)));
+            tu.spacing_mut().item_spacing.y = 2.0;
+            let wrap = |s: RichText| egui::Label::new(s).wrap();
+            if description.is_empty() {
+                // One line: centre it on the control.
+                tu.add_space(10.0);
+                tu.add(wrap(RichText::new(title_text).color(t.text)));
+            } else {
+                tu.add(wrap(RichText::new(title_text).color(t.text)));
+                tu.add(wrap(caption(description).color(t.text2)));
+            }
+            let used = tu.min_rect().height();
+            if used > 40.0 {
+                ui.allocate_exact_size(Vec2::new(0.0, used), Sense::hover());
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control);
         });
     });
@@ -513,6 +536,9 @@ pub fn nav_item(ui: &mut Ui, t: &Tokens, icons: bool, c: char, label: &str, sele
         let pill = egui::Rect::from_center_size(egui::pos2(rect.left() + 1.5, rect.center().y), Vec2::new(3.0, 16.0));
         p.rect_filled(pill, 1.5, t.accent);
     }
+    focus_ring(ui, t, &resp, rect, f32::from(R_CONTROL));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label));
+    let p = ui.painter();
     let icon_font = FontId::new(16.0, FontFamily::Name(ICONS.into()));
     if compact {
         let g = if icons { c.to_string() } else { label.chars().next().unwrap_or('?').to_string() };
@@ -535,17 +561,42 @@ pub fn button_w(ui: &mut Ui, text: impl Into<WidgetText>, w: f32) -> Response {
 
 /// A filter chip: rounded, accent-filled when on.
 pub fn chip(ui: &mut Ui, t: &Tokens, text: impl Into<String>, on: bool) -> Response {
-    let b = egui::Button::new(RichText::new(text).size(13.0).color(if on { t.on_accent } else { t.text }))
+    let b = egui::Button::new(RichText::new(text).size(14.0).color(if on { t.on_accent } else { t.text }))
         .fill(if on { t.accent } else { t.control })
         .stroke(if on { Stroke::NONE } else { Stroke::new(1.0, t.control_stroke) })
         .corner_radius(CornerRadius::same(14))
-        .min_size(Vec2::new(0.0, 28.0));
+        .min_size(Vec2::new(0.0, 30.0));
     ui.add(b)
+}
+
+/// A ComboBox with a Fluent chevron instead of egui's filled triangle.
+pub fn combo<'a>(id: impl egui::AsIdSalt + std::fmt::Debug) -> egui::ComboBox<'a> {
+    egui::ComboBox::from_id_salt(id).icon(|ui, rect, _visuals, _open| {
+        let c = egui::pos2(rect.center().x, rect.center().y + 1.0);
+        let col = ui.visuals().widgets.inactive.fg_stroke.color.gamma_multiply(0.8);
+        let s = Stroke::new(1.3, col);
+        ui.painter().line_segment([egui::pos2(c.x - 4.0, c.y - 2.0), egui::pos2(c.x, c.y + 2.0)], s);
+        ui.painter().line_segment([egui::pos2(c.x, c.y + 2.0), egui::pos2(c.x + 4.0, c.y - 2.0)], s);
+    })
+}
+
+/// A slider with its value in a fixed-width box, filling the control column.
+pub fn slider_row(ui: &mut Ui, t: &Tokens, value: String, slider: egui::Slider) -> Response {
+    ui.add_sized(Vec2::new(60.0, 20.0), egui::Label::new(RichText::new(value).color(t.text2)));
+    ui.spacing_mut().slider_width = CONTROL_COL - 68.0;
+    ui.add(slider.show_value(false))
+}
+
+/// A 2 px focus ring around `rect` when `resp` has keyboard focus.
+pub fn focus_ring(ui: &Ui, t: &Tokens, resp: &Response, rect: egui::Rect, radius: f32) {
+    if resp.has_focus() {
+        ui.painter().rect_stroke(rect.expand(3.0), radius + 3.0, Stroke::new(2.0, t.text), egui::StrokeKind::Outside);
+    }
 }
 
 /// Section header inside a page (Body strong, Windows Settings style).
 pub fn section(ui: &mut Ui, t: &Tokens, text: &str) {
-    ui.add_space(20.0);
+    ui.add_space(24.0);
     ui.label(body_strong(text).color(t.text));
     ui.add_space(4.0);
 }

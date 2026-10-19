@@ -474,7 +474,7 @@ impl LibraryApp {
         // Bottom: capture status, then Settings at the very bottom.
         let r = ui.max_rect();
         let bottom = r.bottom() - 8.0;
-        let status_h = if compact { 96.0 } else { 132.0 };
+        let status_h = if compact { 120.0 } else { 144.0 };
         let area = Rect::from_min_max(Pos2::new(r.left(), bottom - 40.0 - status_h), Pos2::new(r.right(), bottom));
         let mut b = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
         b.spacing_mut().item_spacing.y = 4.0;
@@ -504,7 +504,7 @@ impl LibraryApp {
             (t.text3, "Waiting for a game".to_string(), "Start a game to begin".to_string())
         };
         let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
-        let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(if compact { 6.0 } else { 12.0 }, 4.0))).layout(egui::Layout::top_down(egui::Align::Min)));
+        let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(0.0, 4.0))).layout(egui::Layout::top_down(egui::Align::Min)));
         let ui = &mut inner;
         ui.spacing_mut().item_spacing.y = 6.0;
         let pulse = if capturing.is_empty() { 1.0 } else { 0.55 + 0.45 * ((ui.input(|i| i.time) * 3.0).sin() as f32 * 0.5 + 0.5) };
@@ -517,11 +517,15 @@ impl LibraryApp {
             resp.on_hover_text(format!("{line}\n{sub}"));
         } else {
             ui.horizontal(|ui| {
+                ui.add_space(12.0);
                 let (r, _) = ui.allocate_exact_size(Vec2::new(10.0, 20.0), Sense::hover());
                 ui.painter().circle_filled(r.center(), 5.0, dot.gamma_multiply(pulse));
                 ui.label(theme::body_strong(&line).color(t.text));
             });
-            ui.add(egui::Label::new(theme::caption(&sub).color(t.text2)).truncate());
+            ui.horizontal(|ui| {
+                ui.add_space(30.0);
+                ui.add(egui::Label::new(theme::caption(&sub).color(t.text2)).truncate());
+            });
         }
         let w = ui.available_width();
         let hint_save = format!("Save the replay ({})", self.shared.cfg.hotkeys.save_focused);
@@ -541,18 +545,21 @@ impl LibraryApp {
             }
         } else {
             let ready = !buffering.is_empty();
-            let save = theme::label_with_icon(icons, icon::SAVE, if compact { "" } else { "Save replay" });
-            if ui.add_enabled(ready, egui::Button::new(save).min_size(Vec2::new(w, theme::CONTROL_H))).on_hover_text(&hint_save).on_disabled_hover_text("No game is running").clicked() {
+            // The app's main action: the accent button while a replay is ready.
+            let label = if compact { String::new() } else { format!("Save replay  \u{00b7}  {}", self.shared.cfg.hotkeys.save_focused) };
+            let save = egui::Button::new(theme::icon_label(icons, icon::SAVE, &label, if ready { t.on_accent } else { t.text_disabled }))
+                .fill(if ready { t.accent } else { t.control })
+                .stroke(Stroke::NONE)
+                .min_size(Vec2::new(w, theme::CONTROL_H));
+            if ui.add_enabled(ready, save).on_hover_text(&hint_save).on_disabled_hover_text("No game is running").clicked() {
                 if crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::Save(false)) {
                     self.shared.toast("Saving the replay\u{2026}", false);
                 } else {
                     self.shared.toast("The recorder is not running.", true);
                 }
             }
-            if !compact
-                && ready
-                && ui.add(egui::Button::new(theme::caption("Record session").color(t.text2)).frame_when_inactive(false)).on_hover_text(&hint_rec).clicked()
-            {
+            let rec = theme::label_with_icon(icons, icon::RECORD, if compact { "" } else { "Record session" });
+            if ui.add_enabled(ready, egui::Button::new(rec).frame_when_inactive(false).min_size(Vec2::new(w, theme::CONTROL_H))).on_hover_text(&hint_rec).clicked() {
                 crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::Record);
                 self.recorder_checked = Instant::now() - Duration::from_millis(800);
             }
@@ -686,12 +693,14 @@ impl LibraryApp {
                         .corner_radius(CornerRadius { nw: 0, ne: 0, sw: theme::R_CARD, se: theme::R_CARD })
                         .inner_margin(Margin::same(24))
                         .show(ui, |ui| {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.add(egui::Button::new("Cancel").min_size(Vec2::new(96.0, theme::CONTROL_H))).clicked() {
-                                    result = Some(false);
-                                }
-                                if theme::primary(ui, t, primary, true).clicked() {
+                            ui.columns(2, |cols| {
+                                let w = cols[0].available_width();
+                                let b = egui::Button::new(RichText::new(primary).color(t.on_accent)).fill(t.accent).stroke(Stroke::NONE).min_size(Vec2::new(w, theme::CONTROL_H));
+                                if cols[0].add(b).clicked() {
                                     result = Some(true);
+                                }
+                                if cols[1].add(egui::Button::new("Cancel").min_size(Vec2::new(w, theme::CONTROL_H))).clicked() {
+                                    result = Some(false);
                                 }
                             });
                         });
@@ -709,6 +718,7 @@ impl LibraryApp {
 
     /// Rename and tag dialogs.
     fn clip_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let known_tags = self.lib.all_tags();
         let Some(dialog) = &mut self.dialog else { return };
         let (title, primary) = match dialog {
             ClipDialog::Rename(..) => ("Rename clip", "Rename"),
@@ -724,6 +734,22 @@ impl LibraryApp {
                 ui.add_space(8.0);
                 ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY).hint_text("clutch, funny").margin(Margin::symmetric(10, 7)))
                     .request_focus();
+                let have = crate::library::parse_tags(text);
+                let unused: Vec<String> = known_tags.iter().filter(|k| !have.iter().any(|h| h.eq_ignore_ascii_case(k))).cloned().collect();
+                if !unused.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(theme::caption("Add a tag you use").color(t.text2));
+                    ui.horizontal_wrapped(|ui| {
+                        for k in unused.iter().take(12) {
+                            if theme::chip(ui, t, format!("#{k}"), false).clicked() {
+                                if !text.trim().is_empty() {
+                                    text.push_str(", ");
+                                }
+                                text.push_str(k);
+                            }
+                        }
+                    });
+                }
             }
         });
         let Some(ok) = result else { return };
@@ -783,19 +809,24 @@ impl LibraryApp {
             egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
                 for (i, p) in m.clips.iter().enumerate() {
                     ui.horizontal(|ui| {
-                        ui.label(theme::caption(format!("{}.", i + 1)).color(t.text3));
+                        ui.add_sized(Vec2::new(24.0, 32.0), egui::Label::new(theme::caption(format!("{}", i + 1)).color(t.text2)));
                         let name = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-                        ui.add_sized(Vec2::new(340.0, 24.0), egui::Label::new(RichText::new(name).color(t.text)).truncate());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if theme::subtle(ui, theme::label_with_icon(icons, icon::CANCEL, if icons { "" } else { "x" })).on_hover_text("Leave out").clicked() {
+                            let btn = |ui: &mut egui::Ui, c: char, alt: &str, enabled: bool| {
+                                ui.add_enabled(enabled, egui::Button::new(theme::label_with_icon(icons, c, if icons { "" } else { alt })).frame_when_inactive(false).min_size(Vec2::splat(theme::CONTROL_H)))
+                            };
+                            if btn(ui, icon::CANCEL, "x", n > 1).on_hover_text("Leave out").clicked() {
                                 remove = Some(i);
                             }
-                            if ui.add_enabled(i + 1 < n, egui::Button::new("\u{2193}").frame_when_inactive(false)).on_hover_text("Later").clicked() {
+                            if btn(ui, icon::DOWN, "v", i + 1 < n).on_hover_text("Later").clicked() {
                                 swap = Some((i, i + 1));
                             }
-                            if ui.add_enabled(i > 0, egui::Button::new("\u{2191}").frame_when_inactive(false)).on_hover_text("Earlier").clicked() {
+                            if btn(ui, icon::UP, "^", i > 0).on_hover_text("Earlier").clicked() {
                                 swap = Some((i, i - 1));
                             }
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.add(egui::Label::new(RichText::new(name).color(t.text)).truncate());
+                            });
                         });
                     });
                 }
@@ -827,7 +858,7 @@ impl LibraryApp {
             ui.add_space(6.0);
             egui::Grid::new("montage-mix").num_columns(3).spacing([12.0, 8.0]).show(ui, |ui| {
                 ui.label(RichText::new("Game sound").color(t.text));
-                ui.spacing_mut().slider_width = 260.0;
+                ui.spacing_mut().slider_width = 320.0;
                 ui.add(egui::Slider::new(&mut m.game_volume, 0..=200).show_value(false));
                 ui.label(theme::caption(format!("{}%", m.game_volume)).color(t.text2));
                 ui.end_row();

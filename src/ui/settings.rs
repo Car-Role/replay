@@ -84,7 +84,7 @@ pub struct SettingsPage {
 }
 
 const FPS: [u32; 5] = [30, 60, 120, 144, 240];
-const COMBO_W: f32 = 220.0;
+const COMBO_W: f32 = theme::CONTROL_COL;
 
 impl SettingsPage {
     pub fn new(cfg: &Config) -> Self {
@@ -198,21 +198,11 @@ impl SettingsPage {
     fn recording(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
         let d = &mut self.draft;
         theme::setting(ui, t, icons, Some(icon::CLOCK), "Replay length", "How much recent gameplay a saved clip contains", |ui| {
-            ui.label(RichText::new(theme::fmt_short(f64::from(d.replay_seconds))).color(t.text2));
-            ui.spacing_mut().slider_width = 220.0;
-            ui.add(egui::Slider::new(&mut d.replay_seconds, 15..=1200).logarithmic(true).show_value(false));
-        });
-        let folder = d.output_dir.display().to_string();
-        theme::setting(ui, t, icons, Some(icon::FOLDER), "Clips folder", &folder, |ui| {
-            if theme::button(ui, "Change...", true).clicked()
-                && let Some(p) = crate::sys::shell::pick_folder()
-            {
-                d.output_dir = p;
-            }
+            theme::slider_row(ui, t, theme::fmt_short(f64::from(d.replay_seconds)), egui::Slider::new(&mut d.replay_seconds, 15..=1200).logarithmic(true));
         });
         let encoders = self.encoders.clone();
         theme::setting(ui, t, icons, Some(icon::VIDEO), "Video codec", "AV1 makes the smallest files; H.264 plays everywhere", |ui| {
-            egui::ComboBox::from_id_salt("codec").width(COMBO_W).selected_text(d.video.codec.label()).show_ui(ui, |ui| {
+            theme::combo("codec").width(COMBO_W).selected_text(d.video.codec.label()).show_ui(ui, |ui| {
                 for (c, ok) in &encoders {
                     let label = if *ok { c.label().to_string() } else { format!("{} (no hardware encoder)", c.label()) };
                     ui.add_enabled_ui(*ok, |ui| ui.selectable_value(&mut d.video.codec, *c, label));
@@ -220,26 +210,24 @@ impl SettingsPage {
             });
         });
         theme::setting(ui, t, icons, None, "Frame rate", "Frames per second in saved clips", |ui| {
-            egui::ComboBox::from_id_salt("fps").width(COMBO_W).selected_text(format!("{} fps", d.video.fps)).show_ui(ui, |ui| {
+            theme::combo("fps").width(COMBO_W).selected_text(format!("{} fps", d.video.fps)).show_ui(ui, |ui| {
                 for f in FPS {
                     ui.selectable_value(&mut d.video.fps, f, format!("{f} fps"));
                 }
             });
         });
         theme::setting(ui, t, icons, None, "Resolution", "Clips are never scaled up", |ui| {
-            egui::ComboBox::from_id_salt("res").width(COMBO_W).selected_text(d.video.resolution.label()).show_ui(ui, |ui| {
+            theme::combo("res").width(COMBO_W).selected_text(d.video.resolution.label()).show_ui(ui, |ui| {
                 for r in Resolution::ALL {
                     ui.selectable_value(&mut d.video.resolution, r, r.label());
                 }
             });
         });
         let one = theme::fmt_bytes(d.recording_memory(&["(any game)"]));
-        let desc = format!("Higher is sharper. While one game records, Replay uses about {one} of memory. See the Games page for every game");
+        let desc = format!("Higher is sharper. About {one} of memory while a game records");
         theme::setting(ui, t, icons, None, "Quality", &desc, |ui| {
-            ui.label(RichText::new(theme::fmt_mbps(d.video.bitrate_kbps)).color(t.text2));
-            ui.spacing_mut().slider_width = 220.0;
             let mut kbps = d.video.bitrate_kbps;
-            if ui.add(egui::Slider::new(&mut kbps, 500..=150_000).logarithmic(true).show_value(false)).changed() {
+            if theme::slider_row(ui, t, theme::fmt_mbps(kbps), egui::Slider::new(&mut kbps, 500..=150_000).logarithmic(true)).changed() {
                 // Fine steps for low bitrates, whole Mbit/s above 10.
                 let step = if kbps < 10_000 { 100 } else { 1000 };
                 d.video.bitrate_kbps = ((kbps + step / 2) / step * step).max(500);
@@ -247,7 +235,7 @@ impl SettingsPage {
         });
         theme::setting(ui, t, icons, None, "Rate control", "Variable gives better quality for the same size", |ui| {
             let label = if d.video.rate_control == RateControl::Vbr { "Variable" } else { "Constant" };
-            egui::ComboBox::from_id_salt("rc").width(COMBO_W).selected_text(label).show_ui(ui, |ui| {
+            theme::combo("rc").width(COMBO_W).selected_text(label).show_ui(ui, |ui| {
                 ui.selectable_value(&mut d.video.rate_control, RateControl::Vbr, "Variable");
                 ui.selectable_value(&mut d.video.rate_control, RateControl::Cbr, "Constant");
             });
@@ -262,11 +250,19 @@ impl SettingsPage {
 
     fn storage(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
         let d = &mut self.draft;
+        let folder = d.output_dir.display().to_string();
+        theme::setting(ui, t, icons, Some(icon::FOLDER), "Clips folder", &folder, |ui| {
+            if ui.add(egui::Button::new("Choose folder\u{2026}").min_size(Vec2::new(COMBO_W, theme::CONTROL_H))).clicked()
+                && let Some(p) = crate::sys::shell::pick_folder()
+            {
+                d.output_dir = p;
+            }
+        });
         let (n, bytes) = self.usage;
         let used = format!("The clips folder holds {n} {} ({:.1} GB). Favorites are never deleted.", if n == 1 { "clip" } else { "clips" }, bytes as f64 / 1e9);
         theme::setting(ui, t, icons, Some(icon::FOLDER), "Limit the clips folder size", &used, |ui| {
             let label = |gb: u32| if gb == 0 { "No limit".to_string() } else if gb >= 1000 { format!("{} TB", gb / 1000) } else { format!("{gb} GB") };
-            egui::ComboBox::from_id_salt("max-gb").width(COMBO_W).selected_text(label(d.storage.max_gb)).show_ui(ui, |ui| {
+            theme::combo("max-gb").width(COMBO_W).selected_text(label(d.storage.max_gb)).show_ui(ui, |ui| {
                 for gb in [0, 10, 25, 50, 100, 250, 500, 1000] {
                     ui.selectable_value(&mut d.storage.max_gb, gb, label(gb));
                 }
@@ -278,7 +274,7 @@ impl SettingsPage {
                 365 => "After 1 year".to_string(),
                 d => format!("After {d} days"),
             };
-            egui::ComboBox::from_id_salt("max-age").width(COMBO_W).selected_text(label(d.storage.max_age_days)).show_ui(ui, |ui| {
+            theme::combo("max-age").width(COMBO_W).selected_text(label(d.storage.max_age_days)).show_ui(ui, |ui| {
                 for days in [0, 7, 14, 30, 60, 90, 180, 365] {
                     ui.selectable_value(&mut d.storage.max_age_days, days, label(days));
                 }
@@ -297,7 +293,7 @@ impl SettingsPage {
         let mics = self.mics.clone();
         theme::setting(ui, t, icons, None, "Microphone device", "", |ui| {
             let current = mics.iter().find(|(id, _)| *id == d.audio.microphone_device).map(|(_, n)| n.clone()).unwrap_or_else(|| "System default".into());
-            egui::ComboBox::from_id_salt("mic").width(300.0).selected_text(current).show_ui(ui, |ui| {
+            theme::combo("mic").width(300.0).selected_text(current).show_ui(ui, |ui| {
                 ui.selectable_value(&mut d.audio.microphone_device, String::new(), "System default");
                 for (id, name) in &mics {
                     ui.selectable_value(&mut d.audio.microphone_device, id.clone(), name);
@@ -309,13 +305,11 @@ impl SettingsPage {
         });
         for (label, v) in [("Game volume in the mix", &mut d.audio.game_volume), ("Mic volume in the mix", &mut d.audio.microphone_volume)] {
             theme::setting(ui, t, icons, None, label, "", |ui| {
-                ui.label(RichText::new(format!("{v}%")).color(t.text2));
-                ui.spacing_mut().slider_width = 220.0;
-                ui.add(egui::Slider::new(v, 0..=200).show_value(false));
+                theme::slider_row(ui, t, format!("{v}%"), egui::Slider::new(v, 0..=200));
             });
         }
         theme::setting(ui, t, icons, None, "Audio quality", "AAC bitrate", |ui| {
-            egui::ComboBox::from_id_salt("abr").width(COMBO_W).selected_text(format!("{} kbit/s", d.audio.bitrate_kbps)).show_ui(ui, |ui| {
+            theme::combo("abr").width(COMBO_W).selected_text(format!("{} kbit/s", d.audio.bitrate_kbps)).show_ui(ui, |ui| {
                 for b in [96, 128, 160, 192] {
                     ui.selectable_value(&mut d.audio.bitrate_kbps, b, format!("{b} kbit/s"));
                 }
@@ -335,7 +329,7 @@ impl SettingsPage {
         let cams = self.cameras.clone();
         theme::setting(ui, t, icons, None, "Camera", "", |ui| {
             let current = cams.iter().find(|(id, _)| *id == d.webcam.device).map(|(_, n)| n.clone()).unwrap_or_else(|| "First camera".into());
-            egui::ComboBox::from_id_salt("cam").width(300.0).selected_text(current).show_ui(ui, |ui| {
+            theme::combo("cam").width(300.0).selected_text(current).show_ui(ui, |ui| {
                 ui.selectable_value(&mut d.webcam.device, String::new(), "First camera");
                 for (id, name) in &cams {
                     ui.selectable_value(&mut d.webcam.device, id.clone(), name);
@@ -343,16 +337,14 @@ impl SettingsPage {
             });
         });
         theme::setting(ui, t, icons, None, "Position", "", |ui| {
-            egui::ComboBox::from_id_salt("cam-corner").width(COMBO_W).selected_text(d.webcam.corner.label()).show_ui(ui, |ui| {
+            theme::combo("cam-corner").width(COMBO_W).selected_text(d.webcam.corner.label()).show_ui(ui, |ui| {
                 for c in OverlayCorner::ALL {
                     ui.selectable_value(&mut d.webcam.corner, c, c.label());
                 }
             });
         });
         theme::setting(ui, t, icons, None, "Size", "Height of the camera picture", |ui| {
-            ui.label(RichText::new(format!("{}%", d.webcam.size)).color(t.text2));
-            ui.spacing_mut().slider_width = 220.0;
-            ui.add(egui::Slider::new(&mut d.webcam.size, 10..=50).show_value(false));
+            theme::slider_row(ui, t, format!("{}%", d.webcam.size), egui::Slider::new(&mut d.webcam.size, 10..=50));
         });
     }
 
@@ -366,7 +358,7 @@ impl SettingsPage {
         ] {
             theme::setting(ui, t, icons, Some(icon::KEYBOARD), label, desc, |ui| {
                 let ok = crate::hotkey::parse(value);
-                ui.add(egui::TextEdit::singleline(value).desired_width(180.0).margin(Margin::symmetric(10, 7)));
+                ui.add(egui::TextEdit::singleline(value).desired_width(COMBO_W - 44.0).margin(Margin::symmetric(10, 7)));
                 match ok {
                     Ok(_) => {
                         if icons {
@@ -416,7 +408,7 @@ impl SettingsPage {
     fn sharing(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared) {
         let d = &mut self.draft;
         theme::setting(ui, t, icons, Some(icon::SHARE), "Upload to", d.share.target.describe(), |ui| {
-            egui::ComboBox::from_id_salt("target").width(COMBO_W).selected_text(d.share.target.label()).show_ui(ui, |ui| {
+            theme::combo("target").width(COMBO_W).selected_text(d.share.target.label()).show_ui(ui, |ui| {
                 for u in UploadTarget::ALL {
                     ui.selectable_value(&mut d.share.target, u, u.label());
                 }
@@ -425,7 +417,7 @@ impl SettingsPage {
         match d.share.target {
             UploadTarget::Streamable => {
                 theme::setting(ui, t, icons, None, "Streamable email", "Used to upload clips to your Streamable account", |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut d.share.streamable_email).desired_width(260.0).margin(Margin::symmetric(10, 7)));
+                    ui.add(egui::TextEdit::singleline(&mut d.share.streamable_email).desired_width(COMBO_W - 20.0).margin(Margin::symmetric(10, 7)));
                 });
                 let saved = !shared.cfg.share.streamable_password_protected.is_empty();
                 let hint = if saved { "Saved. Type to replace it" } else { "" };
@@ -434,7 +426,7 @@ impl SettingsPage {
                     if theme::button(ui, "Save", !self.password.is_empty()).clicked() {
                         save_pw = true;
                     }
-                    let r = ui.add(egui::TextEdit::singleline(&mut self.password).password(true).hint_text(hint).desired_width(220.0).margin(Margin::symmetric(10, 7)));
+                    let r = ui.add(egui::TextEdit::singleline(&mut self.password).password(true).hint_text(hint).desired_width(COMBO_W - 92.0).margin(Margin::symmetric(10, 7)));
                     if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.password.is_empty() {
                         save_pw = true;
                     }
@@ -448,7 +440,7 @@ impl SettingsPage {
             UploadTarget::Litterbox => {
                 theme::setting(ui, t, icons, None, "Keep files for", "Litterbox deletes them after this time", |ui| {
                     let label = |h: u32| if h == 1 { "1 hour".to_string() } else { format!("{h} hours") };
-                    egui::ComboBox::from_id_salt("litter").width(COMBO_W).selected_text(label(d.share.litterbox_hours)).show_ui(ui, |ui| {
+                    theme::combo("litter").width(COMBO_W).selected_text(label(d.share.litterbox_hours)).show_ui(ui, |ui| {
                         for h in [1, 12, 24, 72] {
                             ui.selectable_value(&mut d.share.litterbox_hours, h, label(h));
                         }
@@ -509,11 +501,11 @@ impl SettingsPage {
     }
 
     fn updates(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared) {
-        theme::setting(ui, t, icons, Some(icon::INFO), &format!("Replay {}", crate::update::CURRENT), "Instant replay for Windows games. Free and open source (MIT)", |ui| {
+        theme::setting(ui, t, icons, Some(icon::INFO), "Replay", &format!("Version {}  \u{00b7}  Instant replay for Windows games. Free and open source (MIT)", crate::update::CURRENT), |ui| {
             if theme::button(ui, "Report a problem", true).clicked() {
                 crate::sys::shell::open_url("https://github.com/Car-Role/replay/issues");
             }
-            if theme::subtle(ui, RichText::new("Website").color(t.accent)).clicked() {
+            if ui.link(RichText::new("Website").color(t.text)).clicked() {
                 crate::sys::shell::open_url("https://car-role.github.io/replay/");
             }
         });
@@ -521,7 +513,7 @@ impl SettingsPage {
         theme::setting(ui, t, icons, Some(icon::UPDATE), "Automatic updates", "Check once a day and download new versions in the background", |ui| {
             theme::toggle(ui, t, &mut d.updates.auto_check);
         });
-        let version = format!("Replay {} for {}", crate::update::CURRENT, crate::sys::PLATFORM);
+        let version = format!("You have version {}", crate::update::CURRENT);
         let state = self.update.clone();
         let (title, desc): (String, String) = match &state {
             UpdateState::Checking => ("Checking for updates...".into(), version.clone()),
@@ -529,7 +521,7 @@ impl SettingsPage {
             UpdateState::Ready(v) => (format!("Version {v} is ready to install"), "Replay restarts to finish the update".into()),
             UpdateState::Available { version: v, why, .. } => (format!("Version {v} is available"), why.clone()),
             UpdateState::Failed(e) => ("The update check failed".into(), e.clone()),
-            UpdateState::Idle => (version.clone(), "Releases are signed; only verified updates are installed".into()),
+            UpdateState::Idle => ("Updates".into(), "Releases are signed; only verified updates are installed".into()),
         };
         let mut check = false;
         let mut restart = false;
@@ -582,11 +574,11 @@ impl SettingsPage {
         theme::setting(ui, t, icons, Some(icon::INFO), "Notifications", "Show a Windows notification when a replay is saved", |ui| {
             theme::toggle(ui, t, &mut d.notify);
         });
-        theme::setting(ui, t, icons, Some(icon::VIDEO), "In-game notice", "Show a small card over the game when a replay is saved. It never shows up in clips", |ui| {
+        theme::setting(ui, t, icons, Some(icon::VIDEO), "In-game notice", "A small card over the game confirms each save. It never shows up in clips", |ui| {
             theme::toggle(ui, t, &mut d.overlay.enabled);
         });
-        theme::setting(ui, t, icons, None, "Notice position", "", |ui| {
-            egui::ComboBox::from_id_salt("corner").width(COMBO_W).selected_text(d.overlay.corner.label()).show_ui(ui, |ui| {
+        theme::setting(ui, t, icons, None, "Notice position", "Corner of the screen for the in-game notice", |ui| {
+            theme::combo("corner").width(COMBO_W).selected_text(d.overlay.corner.label()).show_ui(ui, |ui| {
                 for c in OverlayCorner::ALL {
                     ui.selectable_value(&mut d.overlay.corner, c, c.label());
                 }

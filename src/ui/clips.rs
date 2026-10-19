@@ -147,6 +147,51 @@ fn clock(secs_of_day: i64) -> String {
     format!("{h12}:{m:02} {ampm}")
 }
 
+/// The title shown for a clip file (see `display_title`), with the day.
+pub(super) fn friendly_title(path: &std::path::Path, game: &str) -> String {
+    let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+    let modified = std::fs::metadata(path).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+    let offset = utc_offset();
+    let (day, secs) = local_day(modified, offset);
+    let today = local_day(SystemTime::now(), offset).0;
+    let title = display_title(&name, game, &clock(secs));
+    if title == name { name } else { format!("{}, {title}", day_label(day, today)) }
+}
+
+/// A clip's title. Default names ("RuneLite 2026-10-19 10-56-45 (trim)")
+/// repeat the game and date shown elsewhere, so they become "10:56 AM",
+/// "10:56 AM · Trimmed". Names the user chose stay as they are.
+fn display_title(name: &str, game: &str, time: &str) -> String {
+    let game = crate::util::sanitize_file_name(game);
+    let Some(rest) = name.strip_prefix(&game).map(str::trim_start) else { return name.to_string() };
+    // "YYYY-MM-DD HH-MM-SS" then optional " (kind)" or " (kind) (2)".
+    let b = rest.as_bytes();
+    let stamp = b.len() >= 19
+        && b[..19].iter().enumerate().all(|(i, c)| match i {
+            4 | 7 | 13 | 16 => *c == b'-',
+            10 => *c == b' ',
+            _ => c.is_ascii_digit(),
+        });
+    if !stamp {
+        return name.to_string();
+    }
+    let kinds: Vec<&str> = rest[19..].split(['(', ')']).map(str::trim).filter(|s| !s.is_empty() && !s.chars().all(|c| c.is_ascii_digit())).collect();
+    let words: Vec<&str> = kinds
+        .iter()
+        .map(|k| match *k {
+            "trim" | "edit" => "Trimmed",
+            "joined" => "Combined",
+            "montage" => "Montage",
+            "session" => "Session",
+            "small" => "Small",
+            "vertical" => "Vertical",
+            "export" => "Export",
+            other => other,
+        })
+        .collect();
+    if words.is_empty() { time.to_string() } else { format!("{time}  \u{00b7}  {}", words.join(", ")) }
+}
+
 fn short_date(day: i64) -> String {
     let (_, m, d) = civil_from_days(day);
     format!("{} {d}", &MONTHS[(m - 1) as usize][..3])
@@ -193,11 +238,20 @@ impl LibraryApp {
         g.sort.apply(&mut shown);
         if shown.is_empty() {
             ui.add_space(48.0);
+            let mut clear = false;
             ui.vertical_centered(|ui| {
                 ui.label(theme::subtitle("No clips match").color(t.text));
                 ui.add_space(4.0);
                 ui.label(RichText::new("Try another search or filter.").color(t.text2));
+                ui.add_space(12.0);
+                if theme::button(ui, "Clear search and filters", true).clicked() {
+                    clear = true;
+                }
             });
+            if clear {
+                self.gallery.filter.clear();
+                self.gallery.chip = Chip::All;
+            }
             return;
         }
         let offset = utc_offset();
@@ -241,7 +295,7 @@ impl LibraryApp {
                     });
                     ui.add_space(gap);
                 }
-                ui.add_space(16.0);
+                ui.add_space(8.0);
             }
             ui.add_space(72.0);
         });
@@ -284,7 +338,22 @@ impl LibraryApp {
         let mut pick = None;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            ui.add(egui::TextEdit::singleline(&mut self.gallery.filter).hint_text("Search clips, games and tags").desired_width(260.0).margin(Margin::symmetric(10, 6)));
+            let r = ui.add(egui::TextEdit::singleline(&mut self.gallery.filter).hint_text("Search clips, games and tags").desired_width(260.0).margin(Margin { left: 32, right: 28, top: 6, bottom: 6 }));
+            if icons {
+                ui.painter().text(Pos2::new(r.rect.left() + 12.0, r.rect.center().y), Align2::LEFT_CENTER, icon::SEARCH, FontId::new(14.0, egui::FontFamily::Name(theme::ICONS.into())), t.text2);
+            }
+            if !self.gallery.filter.is_empty() {
+                let x = Rect::from_center_size(Pos2::new(r.rect.right() - 14.0, r.rect.center().y), Vec2::splat(22.0));
+                let xr = ui.interact(x, r.id.with("clear"), Sense::click());
+                if xr.hovered() {
+                    ui.painter().rect_filled(x, CornerRadius::same(theme::R_CONTROL), t.subtle_hover);
+                }
+                let glyph = if icons { icon::CANCEL.to_string() } else { "x".into() };
+                ui.painter().text(x.center(), Align2::CENTER_CENTER, glyph, FontId::new(10.0, egui::FontFamily::Name(theme::ICONS.into())), t.text2);
+                if xr.on_hover_text("Clear search").clicked() {
+                    self.gallery.filter.clear();
+                }
+            }
             ui.add_space(4.0);
             let g = &self.gallery;
             if theme::chip(ui, t, "All", g.chip == Chip::All).clicked() {
@@ -308,13 +377,11 @@ impl LibraryApp {
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if theme::subtle(ui, theme::label_with_icon(icons, icon::FOLDER, if icons { "" } else { "Folder" })).on_hover_text("Open the clips folder").clicked() {
+                if theme::button(ui, theme::label_with_icon(icons, icon::FOLDER, if icons { "" } else { "Folder" }), true).on_hover_text("Open the clips folder").clicked() {
                     let _ = std::fs::create_dir_all(&self.shared.cfg.output_dir);
                     crate::sys::shell::open_path(&self.shared.cfg.output_dir);
                 }
-                if theme::subtle(ui, theme::label_with_icon(icons, icon::REFRESH, if icons { "" } else { "Refresh" })).on_hover_text("Refresh").clicked() {
-                    self.rescan(&ctx);
-                }
+                let _ = &ctx;
                 let g = &mut self.gallery;
                 ui.menu_button(theme::label_with_icon(icons, icon::SORT, "View"), |ui| {
                     ui.set_min_width(200.0);
@@ -379,12 +446,13 @@ impl LibraryApp {
 
         // Title and caption.
         let info = self.lib.get(&c.path);
-        let mut job = egui::text::LayoutJob::single_section(c.name.clone(), egui::TextFormat::simple(FontId::new(14.0, egui::FontFamily::Name(theme::SEMIBOLD.into())), t.text));
+        let (day, secs) = local_day(c.modified, offset);
+        let title = display_title(&c.name, &c.game, &clock(secs));
+        let mut job = egui::text::LayoutJob::single_section(title, egui::TextFormat::simple(FontId::new(14.0, egui::FontFamily::Name(theme::SEMIBOLD.into())), t.text));
         job.wrap = egui::text::TextWrapping::truncate_at_width(w);
         p.galley(Pos2::new(rect.left(), img.bottom() + 8.0), p.layout_job(job), t.text);
-        let (day, secs) = local_day(c.modified, offset);
         let first = if self.gallery.group == Group::Game { short_date(day) } else { c.game.clone() };
-        let mut meta = format!("{first}  \u{00b7}  {}  \u{00b7}  {:.0} MB", clock(secs), c.size as f64 / 1e6);
+        let mut meta = format!("{first}  \u{00b7}  {:.0} MB", c.size as f64 / 1e6);
         if self.shared.uploads.contains_key(c.path.to_string_lossy().as_ref()) {
             meta.push_str("  \u{00b7}  Uploaded");
         }
@@ -412,6 +480,21 @@ impl LibraryApp {
             if sr.on_hover_text(if info.favorite { "Remove from favorites" } else { "Add to favorites" }).clicked() {
                 star_clicked = true;
                 self.set_favorite(&c.path, !info.favorite);
+            }
+        }
+
+        // Copy file (for pasting into Discord), on hover.
+        if hovered {
+            let cp = Rect::from_min_size(Pos2::new(img.right() - 58.0, img.top() + 6.0), Vec2::splat(24.0));
+            let cr = ui.interact(cp, resp.id.with("copy"), Sense::click());
+            p.rect_filled(cp, r, Color32::from_black_alpha(if cr.hovered() { 200 } else { 140 }));
+            let g = if icons { icon::COPY.to_string() } else { "C".into() };
+            p.text(cp.center(), Align2::CENTER_CENTER, g, FontId::new(13.0, egui::FontFamily::Name(theme::ICONS.into())), Color32::WHITE);
+            if cr.on_hover_text("Copy file, then paste it into Discord").clicked() {
+                star_clicked = true;
+                if crate::sys::shell::copy_file(&c.path) {
+                    self.shared.toast("Copied. Paste it with Ctrl+V.", false);
+                }
             }
         }
 
@@ -531,15 +614,17 @@ impl LibraryApp {
                             let b = |ui: &mut egui::Ui, c: char, label: &str, enabled: bool| {
                                 ui.add_enabled(enabled, egui::Button::new(theme::label_with_icon(icons, c, label)).frame_when_inactive(false).min_size(Vec2::new(0.0, theme::CONTROL_H)))
                             };
-                            if b(ui, icon::JOIN, "Join", n >= 2).on_disabled_hover_text("Select two or more clips").clicked() {
+                            if b(ui, icon::JOIN, "Combine", n >= 2).on_hover_text("Join into one clip, oldest first").on_disabled_hover_text("Select two or more clips").clicked() {
                                 action = Some("join");
                             }
-                            if b(ui, icon::VIDEO, "Montage", n >= 2).on_disabled_hover_text("Select two or more clips").clicked() {
+                            if b(ui, icon::VIDEO, "Montage", n >= 2).on_hover_text("Choose the order and add music").on_disabled_hover_text("Select two or more clips").clicked() {
                                 action = Some("montage");
                             }
                             if b(ui, icon::TAG, "Tags", true).clicked() {
                                 action = Some("tags");
                             }
+                            let (d, _) = ui.allocate_exact_size(Vec2::new(9.0, 20.0), Sense::hover());
+                            ui.painter().line_segment([d.center_top(), d.center_bottom()], Stroke::new(1.0, t.divider));
                             if b(ui, icon::DELETE, "Delete", true).clicked() {
                                 action = Some("delete");
                             }
@@ -589,6 +674,13 @@ mod tests {
             assert_eq!(civil_from_days(days_from_civil(y, m, d)), (y, m, d));
         }
         assert_eq!(days_from_civil(1970, 1, 1), 0);
+    }
+
+    #[test]
+    fn default_names_become_short_titles() {
+        assert_eq!(display_title("RuneLite 2026-10-19 10-56-45", "RuneLite", "10:56 AM"), "10:56 AM");
+        assert_eq!(display_title("RuneLite 2026-10-19 10-56-45 (trim) (2)", "RuneLite", "10:56 AM"), "10:56 AM  \u{00b7}  Trimmed");
+        assert_eq!(display_title("Big clutch", "RuneLite", "10:56 AM"), "Big clutch");
     }
 
     #[test]

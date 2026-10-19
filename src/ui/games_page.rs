@@ -120,6 +120,8 @@ impl LibraryApp {
         }
         let icons = self.shared.icons;
         let list = self.game_list();
+        // Header and rows share one column, so their right edges line up.
+        ui.set_max_width(ui.available_width().min(1000.0));
         ui.horizontal(|ui| {
             ui.label(theme::title("Games").color(t.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -177,7 +179,10 @@ impl LibraryApp {
                 if group.is_empty() {
                     continue;
                 }
-                ui.add_space(12.0);
+                let first = std::ptr::eq(group, &recording) || (recording.is_empty() && std::ptr::eq(group, &on)) || (recording.is_empty() && on.is_empty());
+                if !first {
+                    ui.add_space(16.0);
+                }
                 ui.label(theme::body_strong(title).color(t.text));
                 ui.add_space(6.0);
                 for g in group.iter() {
@@ -275,6 +280,7 @@ impl LibraryApp {
             self.game_open = None;
         }
         ui.add_space(12.0);
+        ui.set_max_width(ui.available_width().min(1000.0));
         let current = self.shared.cfg.games.get(&g.exe).cloned().unwrap_or_default();
         let general = self.shared.cfg.clone();
         let mut s = current.clone();
@@ -284,7 +290,7 @@ impl LibraryApp {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(ui.available_width().min(1000.0));
             ui.spacing_mut().item_spacing.y = 2.0;
-            theme::setting(ui, t, icons, Some(icon::RECORD), "Record this game", "Keep a replay buffer while it runs", |ui| {
+            theme::setting(ui, t, icons, Some(icon::GAME), "Record this game", "Keep a replay buffer while it runs", |ui| {
                 let mut v = enabled;
                 if theme::toggle(ui, t, &mut v).changed() {
                     toggle = Some(v);
@@ -292,10 +298,10 @@ impl LibraryApp {
             });
 
             theme::section(ui, t, "Quality");
-            let combo_w = 260.0;
+            let combo_w = theme::CONTROL_COL;
             theme::setting(ui, t, icons, Some(icon::VIDEO), "Frame rate", "", |ui| {
                 let label = |v: Option<u32>| v.map(|f| format!("{f} fps")).unwrap_or_else(|| format!("Same as general ({} fps)", general.video.fps));
-                egui::ComboBox::from_id_salt("g-fps").width(combo_w).selected_text(label(s.fps)).show_ui(ui, |ui| {
+                theme::combo("g-fps").width(combo_w).selected_text(label(s.fps)).show_ui(ui, |ui| {
                     ui.selectable_value(&mut s.fps, None, label(None));
                     for f in FPS_CHOICES {
                         ui.selectable_value(&mut s.fps, Some(f), label(Some(f)));
@@ -307,7 +313,7 @@ impl LibraryApp {
                     Some(r) => r.label().to_string(),
                     None => format!("Same as general ({})", general.video.resolution.label()),
                 };
-                egui::ComboBox::from_id_salt("g-res").width(combo_w).selected_text(label(s.resolution)).show_ui(ui, |ui| {
+                theme::combo("g-res").width(combo_w).selected_text(label(s.resolution)).show_ui(ui, |ui| {
                     ui.selectable_value(&mut s.resolution, None, label(None));
                     for r in Resolution::ALL {
                         ui.selectable_value(&mut s.resolution, Some(r), label(Some(r)));
@@ -319,7 +325,7 @@ impl LibraryApp {
                     Some(k) => theme::fmt_mbps(k),
                     None => format!("Same as general ({})", theme::fmt_mbps(general.video.bitrate_kbps)),
                 };
-                egui::ComboBox::from_id_salt("g-br").width(combo_w).selected_text(label(s.bitrate_kbps)).show_ui(ui, |ui| {
+                theme::combo("g-br").width(combo_w).selected_text(label(s.bitrate_kbps)).show_ui(ui, |ui| {
                     ui.selectable_value(&mut s.bitrate_kbps, None, label(None));
                     for k in KBPS_CHOICES {
                         ui.selectable_value(&mut s.bitrate_kbps, Some(k), label(Some(k)));
@@ -331,7 +337,7 @@ impl LibraryApp {
                     Some(secs) => theme::fmt_short(f64::from(secs)),
                     None => format!("Same as general ({})", theme::fmt_short(f64::from(general.replay_seconds))),
                 };
-                egui::ComboBox::from_id_salt("g-len").width(combo_w).selected_text(label(s.replay_seconds)).show_ui(ui, |ui| {
+                theme::combo("g-len").width(combo_w).selected_text(label(s.replay_seconds)).show_ui(ui, |ui| {
                     ui.selectable_value(&mut s.replay_seconds, None, label(None));
                     for secs in LENGTH_CHOICES {
                         ui.selectable_value(&mut s.replay_seconds, Some(secs), label(Some(secs)));
