@@ -132,6 +132,8 @@ pub struct Job {
 
 pub enum JobDone {
     Exported(PathBuf),
+    /// Exported, then put on the clipboard (Copy for Discord).
+    ExportedCopied(PathBuf),
     Uploaded(PathBuf, String),
     Update(settings::UpdateState),
     Failed(String),
@@ -253,6 +255,8 @@ pub struct LibraryApp {
     /// The game whose page is open on the Games tab.
     game_open: Option<String>,
     snapshot: Option<snapshot::Snapshot>,
+    /// When the library was opened before this time; newer clips are "New".
+    seen_before: Option<SystemTime>,
 }
 
 impl LibraryApp {
@@ -311,6 +315,7 @@ impl LibraryApp {
             pending_delete: None,
             game_open: None,
             snapshot: None,
+            seen_before: seen_marker(),
         };
         app.rescan(&ctx);
         if let Some(p) = open.filter(|p| p.exists()) {
@@ -386,6 +391,15 @@ impl LibraryApp {
                     self.commit_delete();
                     let name = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
                     self.shared.toast_action(format!("Saved \u{201c}{name}\u{201d}"), ToastAction::Open(p));
+                    self.rescan(ctx);
+                }
+                JobDone::ExportedCopied(p) => {
+                    let mb = std::fs::metadata(&p).map(|m| m.len() as f64 / 1e6).unwrap_or(0.0);
+                    if crate::sys::shell::copy_file(&p) {
+                        self.shared.toast(format!("Ready for Discord ({mb:.1} MB) and copied. Paste it with Ctrl+V."), false);
+                    } else {
+                        self.shared.toast("The copy is saved, but the clipboard was busy.", true);
+                    }
                     self.rescan(ctx);
                 }
                 JobDone::Uploaded(p, url) => {
@@ -491,11 +505,12 @@ impl LibraryApp {
         // Bottom: capture status, then Settings at the very bottom.
         let r = ui.max_rect();
         let bottom = r.bottom() - 8.0;
-        let status_h = if compact { 120.0 } else { 152.0 };
-        let area = Rect::from_min_max(Pos2::new(r.left(), bottom - 40.0 - status_h), Pos2::new(r.right(), bottom));
+        let status_h = if compact { 136.0 } else { 144.0 };
+        let area = Rect::from_min_max(Pos2::new(r.left(), bottom - 48.0 - status_h), Pos2::new(r.right(), bottom));
         let mut b = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
         b.spacing_mut().item_spacing.y = 4.0;
         self.capture_status(&mut b, t, compact, status_h);
+        b.add_space(8.0);
         if theme::nav_item(&mut b, t, icons, icon::SETTINGS, "Settings", self.page == Page::Settings, compact).clicked() {
             self.page = Page::Settings;
         }
@@ -525,7 +540,7 @@ impl LibraryApp {
         ui.painter().line_segment([Pos2::new(rect.left(), rect.top()), Pos2::new(rect.right(), rect.top())], Stroke::new(1.0, t.divider));
         let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(0.0, 8.0))).layout(egui::Layout::top_down(egui::Align::Min)));
         let ui = &mut inner;
-        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.spacing_mut().item_spacing.y = 4.0;
         let pulse = if capturing.is_empty() { 1.0 } else { 0.55 + 0.45 * ((ui.input(|i| i.time) * 3.0).sin() as f32 * 0.5 + 0.5) };
         if !capturing.is_empty() {
             ui.ctx().request_repaint_after(Duration::from_millis(50));
@@ -548,6 +563,7 @@ impl LibraryApp {
             ui.painter().galley(Pos2::new(r.left() + 44.0, r.top() + 22.0), g, t.text2);
         }
         resp.on_hover_text(format!("{line}\n{sub}"));
+        ui.add_space(8.0);
         let save_key = self.shared.cfg.hotkeys.save_focused.clone();
         let rec_key = self.shared.cfg.hotkeys.record.clone();
         if !self.recorder_running {
@@ -752,7 +768,7 @@ impl LibraryApp {
                 if !have.is_empty() {
                     ui.horizontal_wrapped(|ui| {
                         for (i, tag) in have.iter().enumerate() {
-                            if theme::chip(ui, t, format!("#{tag}  \u{00d7}"), true).on_hover_text("Remove").clicked() {
+                            if theme::tag_chip(ui, t, tag).on_hover_text("Remove").clicked() {
                                 drop = Some(i);
                             }
                         }
@@ -877,12 +893,15 @@ impl LibraryApp {
                             if btn(ui, icon::CANCEL, "x", n > 1).on_hover_text("Leave out").clicked() {
                                 remove = Some(i);
                             }
-                            if btn(ui, icon::DOWN, "v", i + 1 < n).on_hover_text("Later").clicked() {
+                            let down = ui.add_visible(i + 1 < n, egui::Button::new(theme::label_with_icon(icons, icon::DOWN, if icons { "" } else { "v" })).frame_when_inactive(false).min_size(Vec2::splat(theme::CONTROL_H)));
+                            if down.on_hover_text("Later").clicked() {
                                 swap = Some((i, i + 1));
                             }
-                            if btn(ui, icon::UP, "^", i > 0).on_hover_text("Earlier").clicked() {
+                            let up = ui.add_visible(i > 0, egui::Button::new(theme::label_with_icon(icons, icon::UP, if icons { "" } else { "^" })).frame_when_inactive(false).min_size(Vec2::splat(theme::CONTROL_H)));
+                            if up.on_hover_text("Earlier").clicked() {
                                 swap = Some((i, i - 1));
                             }
+                            let _ = &btn;
                             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                 ui.add(egui::Label::new(RichText::new(name).color(t.text)).truncate());
                             });
@@ -891,8 +910,9 @@ impl LibraryApp {
                 }
             });
             let total: f64 = m.clips.iter().filter_map(|p| rows.get(p)).map(|r| r.2).sum();
+            let mb: f64 = m.clips.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|md| md.len() as f64 / 1e6).sum();
             ui.add_space(4.0);
-            ui.label(theme::caption(format!("{} clips  \u{00b7}  {} in total", m.clips.len(), theme::fmt_short(total))).color(t.text2));
+            ui.label(theme::caption(format!("{} clips  \u{00b7}  {} in total  \u{00b7}  about {mb:.0} MB", m.clips.len(), theme::fmt_short(total))).color(t.text2));
             if let Some((a, b)) = swap {
                 m.clips.swap(a, b);
             }
@@ -921,21 +941,27 @@ impl LibraryApp {
                 });
             });
             ui.add_space(6.0);
-            egui::Grid::new("montage-mix").num_columns(3).spacing([12.0, 8.0]).show(ui, |ui| {
-                ui.label(RichText::new("Game sound").color(t.text));
-                theme::slider(ui, t, &mut m.game_volume, 0..=200, false, 360.0);
-                ui.label(theme::caption(format!("{}%", m.game_volume)).color(t.text2));
-                ui.end_row();
-                if m.music.is_some() {
-                    ui.label(RichText::new("Music").color(t.text));
-                    theme::slider(ui, t, &mut m.music_volume, 0..=100, false, 360.0);
-                    ui.label(theme::caption(format!("{}%", m.music_volume)).color(t.text2));
-                    ui.end_row();
+            let mix_row = |ui: &mut egui::Ui, label: &str, v: &mut u32, max: u32| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let (lr, _) = ui.allocate_exact_size(Vec2::new(140.0, 28.0), Sense::hover());
+                    ui.painter().text(lr.left_center(), Align2::LEFT_CENTER, label, egui::FontId::proportional(14.0), t.text);
+                    let w = ui.available_width() - 60.0 - 8.0;
+                    theme::slider(ui, t, v, 0..=max, false, w);
+                    let (vr, _) = ui.allocate_exact_size(Vec2::new(60.0, 28.0), Sense::hover());
+                    ui.painter().text(vr.right_center(), Align2::RIGHT_CENTER, format!("{v}%"), egui::FontId::proportional(14.0), t.text2);
+                });
+            };
+            mix_row(ui, "Game sound", &mut m.game_volume, 200);
+            if m.music.is_some() {
+                mix_row(ui, "Music", &mut m.music_volume, 100);
+                ui.horizontal(|ui| {
                     ui.label(RichText::new("Fade out at the end").color(t.text));
-                    theme::toggle(ui, t, &mut m.fade_out);
-                    ui.end_row();
-                }
-            });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        theme::toggle(ui, t, &mut m.fade_out);
+                    });
+                });
+            }
             ui.add_space(4.0);
             ui.label(theme::caption("Clips recorded with different settings are encoded again, which takes longer.").color(t.text3));
         });
@@ -1086,6 +1112,15 @@ impl LibraryApp {
             None => {}
         }
     }
+}
+
+/// Reads when the library was last opened, and records now.
+fn seen_marker() -> Option<SystemTime> {
+    let p = crate::paths::data_dir().join("library-seen");
+    let before = std::fs::read_to_string(&p).ok().and_then(|s| s.trim().parse::<u64>().ok()).map(|s| SystemTime::UNIX_EPOCH + Duration::from_secs(s));
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let _ = std::fs::write(&p, now.to_string());
+    before
 }
 
 /// System thumbnail (a clip frame, or a program's icon), or a frame decoded

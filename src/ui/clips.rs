@@ -439,6 +439,16 @@ impl LibraryApp {
             p.rect_stroke(img, r, Stroke::new(1.0, Color32::from_white_alpha(70)), StrokeKind::Inside);
         }
 
+        // "New": saved since the library was last opened.
+        if self.seen_before.is_some_and(|s| c.modified > s) {
+            let g = p.layout_no_wrap("New".to_string(), FontId::proportional(12.0), Color32::WHITE);
+            let size = g.size() + Vec2::new(12.0, 4.0);
+            let nr = Rect::from_min_size(Pos2::new(img.left() + 6.0, img.bottom() - size.y - 6.0), size);
+            p.rect_filled(nr, r, Color32::from_black_alpha(166));
+            p.circle_filled(Pos2::new(nr.left() - 0.0, nr.top()), 0.0, Color32::TRANSPARENT);
+            p.galley(nr.min + Vec2::new(6.0, 2.0), g, Color32::WHITE);
+        }
+
         // Duration badge.
         let galley = p.layout_no_wrap(theme::fmt_short(c.duration), FontId::proportional(12.0), Color32::WHITE);
         let size = galley.size() + Vec2::new(10.0, 4.0);

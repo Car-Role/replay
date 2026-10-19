@@ -415,10 +415,10 @@ impl Editor {
         }
 
         // Timeline height, then the preview and inspector above it.
-        let dock_h = 44.0 + STRIP_H + WAVE_H + 60.0;
+        let dock_h = 44.0 + STRIP_H + WAVE_H + 60.0 + 12.0;
         let full = ui.available_rect_before_wrap();
         let top = Rect::from_min_max(full.min, Pos2::new(full.right(), (full.bottom() - dock_h - 8.0).max(full.top() + 160.0)));
-        let dock = Rect::from_min_max(Pos2::new(full.left(), top.bottom() + 8.0), full.max);
+        let dock = Rect::from_min_max(Pos2::new(full.left(), top.bottom() + 8.0), full.max - Vec2::new(0.0, 12.0));
         let side = full.width() >= 860.0;
         let preview = if side { Rect::from_min_max(top.min, Pos2::new(top.right() - INSPECTOR_W - 12.0, top.bottom())) } else { top };
         let mut pv = ui.new_child(egui::UiBuilder::new().max_rect(preview));
@@ -476,6 +476,10 @@ impl Editor {
                         let game = self.path.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                         let shown = super::clips::friendly_title(&self.path, &game);
                         let r = ui.add(egui::Label::new(RichText::new(&shown).size(18.0).color(t.text)).truncate().sense(Sense::click()));
+                        if r.hovered() && icons {
+                            let at = Pos2::new(r.rect.right() + 10.0, r.rect.center().y);
+                            ui.painter().text(at, Align2::LEFT_CENTER, icon::EDIT, FontId::new(14.0, FontFamily::Name(theme::ICONS.into())), t.text2);
+                        }
                         if r.on_hover_text("Click to rename").on_hover_cursor(egui::CursorIcon::Text).clicked() {
                             self.name_edit = Some(name.clone());
                         }
@@ -519,6 +523,11 @@ impl Editor {
                             }
                             ui.close();
                         }
+                        let r = ui.add_enabled(!busy, egui::Button::new(theme::label_with_icon(icons, icon::SHARE, "Copy for Discord (10 MB)")));
+                        if r.on_hover_text("Makes a copy that fits Discord's 10 MB limit and puts it on the clipboard").clicked() {
+                            self.copy_for_discord(&ctx, shared);
+                            ui.close();
+                        }
                         if let Some(url) = shared.uploads.get(self.path.to_string_lossy().as_ref()).cloned() {
                             ui.separator();
                             if ui.button(theme::label_with_icon(icons, icon::LINK, "Copy link")).on_hover_text(&url).clicked() {
@@ -529,7 +538,19 @@ impl Editor {
                         }
                     });
                 });
+                ui.add_space(4.0);
+                ui.scope(|ui| {
+                    let w = &mut ui.visuals_mut().widgets;
+                    for s in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+                        s.bg_stroke = Stroke::NONE;
+                    }
+                    w.inactive.weak_bg_fill = Color32::TRANSPARENT;
+                    w.hovered.weak_bg_fill = t.subtle_hover;
+                    w.active.weak_bg_fill = t.subtle_pressed;
+                    w.open.weak_bg_fill = t.subtle_hover;
+                    ui.spacing_mut().button_padding = Vec2::new(8.0, 8.0);
                 ui.menu_button(theme::label_with_icon(icons, icon::MORE, if icons { "" } else { "More" }), |ui| {
+                    ui.reset_style();
                     ui.set_min_width(180.0);
                     if ui.button("Rename").clicked() {
                         self.name_edit = Some(self.path.file_stem().unwrap_or_default().to_string_lossy().into_owned());
@@ -544,10 +565,13 @@ impl Editor {
                         action = Some(Action::Delete(self.path.clone()));
                         ui.close();
                     }
+                }).response.on_hover_text("More");
                 });
+                ui.add_space(4.0);
                 let star = if icons { theme::glyph(if favorite { icon::STAR_FILLED } else { icon::STAR }, 16.0) } else { RichText::new(if favorite { "\u{2605}" } else { "\u{2606}" }) };
                 let star = if favorite { star.color(Color32::from_rgb(255, 200, 61)) } else { star };
-                if theme::subtle(ui, star).on_hover_text(if favorite { "Remove from favorites" } else { "Add to favorites" }).clicked() {
+                let name = if favorite { "Remove from favorites" } else { "Add to favorites" };
+                if theme::icon_button(ui, t, star, name).on_hover_text(name).clicked() {
                     action = Some(Action::Favorite(self.path.clone(), !favorite));
                 }
             });
@@ -729,7 +753,12 @@ impl Editor {
 
         // Selection frame and grab handles.
         let sel = Rect::from_min_max(Pos2::new(xi, strip.top() - 3.0), Pos2::new(xo, strip.bottom() + 3.0));
-        p.rect_stroke(sel, CornerRadius::ZERO, Stroke::new(3.0, t.accent), StrokeKind::Inside);
+        let trimmed = self.in_point > 0.001 || self.out_point < dur - 0.001;
+        if trimmed {
+            p.rect_stroke(sel, CornerRadius::ZERO, Stroke::new(3.0, t.accent), StrokeKind::Inside);
+        } else {
+            p.rect_stroke(sel, CornerRadius::ZERO, Stroke::new(1.0, t.control_stroke), StrokeKind::Inside);
+        }
         let hovered_handle = resp.hover_pos().and_then(|m| self.handle_at(m.x, xi, xo));
         for (x, which) in [(xi, Drag::In), (xo, Drag::Out)] {
             let h = if which == Drag::In {
@@ -850,7 +879,7 @@ impl Editor {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.set_min_height(ui.available_height());
-                let footer_h = 104.0;
+                let footer_h = 112.0;
                 let out = egui::ScrollArea::vertical()
                     .id_salt("inspector")
                     .auto_shrink([false, false])
@@ -946,12 +975,12 @@ impl Editor {
                     ui.add_space(4.0);
                     ui.label(theme::caption("Space play  \u{00b7}  I / O start and end  \u{00b7}  \u{2190} \u{2192} frame  \u{00b7}  Shift 1 s").color(t.text3));
                 });
-                // More below: fade the last 32 px into the panel.
+                // More below: fade the last 12 px into the panel.
                 if out.state.offset().y + out.inner_rect.height() < out.content_size.y - 1.0 {
                     let r = out.inner_rect;
-                    for i in 0..32 {
-                        let y = r.bottom() - 32.0 + i as f32;
-                        let a = (i as f32 / 32.0).powf(0.7);
+                    for i in 0..12 {
+                        let y = r.bottom() - 12.0 + i as f32;
+                        let a = (i as f32 / 12.0).powf(0.7);
                         ui.painter().line_segment([Pos2::new(r.left(), y), Pos2::new(r.right() - 8.0, y)], Stroke::new(1.0, t.card.gamma_multiply(a)));
                     }
                 }
@@ -989,8 +1018,8 @@ impl Editor {
             for (v, label, hint) in [(false, "Landscape", "As recorded"), (true, "Vertical 9:16", "For Shorts, TikTok and Reels")] {
                 let on = self.vertical == v;
                 let b = egui::Button::new(RichText::new(label).color(if on { t.text } else { t.text2 }))
-                    .fill(if on { if t.dark { Color32::from_gray(58) } else { Color32::from_gray(230) } } else { t.control })
-                    .stroke(Stroke::new(if on { 1.5 } else { 1.0 }, if on { t.accent } else { t.control_stroke }))
+                    .fill(if on { if t.dark { Color32::from_gray(62) } else { Color32::from_gray(230) } } else { Color32::TRANSPARENT })
+                    .stroke(Stroke::new(1.0, if on { t.accent } else { t.control_stroke }))
                     .min_size(Vec2::new(half, theme::CONTROL_H));
                 if ui.add(b).on_hover_text(hint).clicked() {
                     self.vertical = v;
@@ -998,6 +1027,21 @@ impl Editor {
             }
         });
 
+    }
+
+    /// Share > Copy for Discord: encodes a 10 MB copy and puts it on the
+    /// clipboard when it is done.
+    fn copy_for_discord(&mut self, ctx: &egui::Context, shared: &mut Shared) {
+        let secs = (self.out_point - self.in_point).max(0.1);
+        let (k, h) = edit::size_target(10.0, secs, 128);
+        let spec = edit::EncodeSpec { codec: crate::config::Codec::H264, bitrate_kbps: k, cbr: true, max_height: h, vertical: self.vertical.then_some(self.crop_center) };
+        let seg = vec![Segment { path: self.path.clone(), start: self.in_point, end: self.out_point }];
+        let out = edit::edited_name(&self.path, "discord");
+        let mix = Mix { game: self.game_gain, mic: self.mic_gain, keep_separate: false, bitrate_kbps: 128, music: None };
+        shared.spawn_job(ctx, JobKind::Export, "Making a copy for Discord".into(), move |p| match edit::export(&seg, &out, &mix, &edit::VideoMode::Encode(spec), p) {
+            Ok(path) => JobDone::ExportedCopied(path),
+            Err(e) => JobDone::Failed(format!("Copy for Discord failed: {e}")),
+        });
     }
 
     /// The pinned footer: estimate, notes and "Save a copy".
@@ -1015,29 +1059,36 @@ impl Editor {
                 let (k, h) = edit::size_target(mb, secs, audio_kbps);
                 edit::EncodeSpec { codec: crate::config::Codec::H264, bitrate_kbps: k, cbr: true, max_height: h, vertical: self.vertical.then_some(self.crop_center) }
             }
-            None => edit::EncodeSpec {
-                codec: crate::config::Codec::H264,
-                bitrate_kbps: (self.video_kbps.max(2000) * 7 / 5).min(150_000),
-                cbr: false,
-                max_height: None,
-                vertical: self.vertical.then_some(self.crop_center),
-            },
+            None => {
+                // Same quality per pixel as the source; a crop keeps fewer pixels.
+                let mut spec = edit::EncodeSpec { codec: crate::config::Codec::H264, bitrate_kbps: 0, cbr: false, max_height: None, vertical: self.vertical.then_some(self.crop_center) };
+                let (_, (ow, oh)) = edit::plan_frame(self.video_size.0, self.video_size.1, &spec);
+                let area = f64::from(ow * oh) / f64::from((self.video_size.0 * self.video_size.1).max(1));
+                let h264 = if self.codec.starts_with("H.264") { 1.0 } else { 1.4 };
+                spec.bitrate_kbps = ((f64::from(self.video_kbps.max(2000)) * area * h264) as u32).clamp(1_500, 150_000);
+                spec
+            }
         };
         let (_, (ow, oh)) = edit::plan_frame(self.video_size.0, self.video_size.1, &spec);
         let line = if copy {
             let mb = self.size_bytes as f64 / 1e6 * secs / self.duration.max(0.1);
-            format!("About {mb:.0} MB  \u{00b7}  {} x {}  \u{00b7}  {}", self.video_size.0, self.video_size.1, self.codec)
+            format!("About {mb:.0} MB  \u{00b7}  {} \u{00d7} {}", self.video_size.0, self.video_size.1)
         } else {
             let est_mb = (f64::from(spec.bitrate_kbps) + f64::from(audio_kbps)) * secs / 8000.0;
-            format!("About {est_mb:.1} MB  \u{00b7}  {ow} x {oh}  \u{00b7}  H.264")
+            format!("About {est_mb:.0} MB  \u{00b7}  {ow} \u{00d7} {oh}")
         };
         ui.label(theme::caption(line).color(t.text2));
-        if !copy {
-            ui.label(theme::caption("Encoded as H.264, so it plays on every phone and site.").color(t.text3));
-        }
-        if !copy && spec.bitrate_kbps < 800 {
-            ui.label(theme::caption("Long for this size, so the picture will be soft. Trim it shorter for a sharper clip.").color(t.caution));
-        }
+        // Always one note line, so the button never moves.
+        let (note, color) = if !copy && spec.bitrate_kbps < 800 {
+            ("Long for this size: the picture will be soft. Trim it shorter.".to_string(), t.caution)
+        } else if !copy {
+            ("Encoded as H.264, so it plays on every phone and site.".to_string(), t.text3)
+        } else if self.exact {
+            (format!("Encoded again as {} to cut on the exact frame.", self.codec), t.text3)
+        } else {
+            (format!("Copied as {}, so nothing is lost.", self.codec), t.text3)
+        };
+        ui.add(egui::Label::new(theme::caption(note).color(color)).truncate());
         let b = egui::Button::new(theme::label_with_icon(icons, icon::SAVE, "Save a copy")).min_size(Vec2::new(ui.available_width(), theme::CONTROL_H));
         if ui.add_enabled(!busy, b).clicked() {
             let seg = vec![Segment { path: self.path.clone(), start: self.in_point, end: self.out_point }];
@@ -1082,7 +1133,7 @@ impl Editor {
 fn section(ui: &mut egui::Ui, t: &Tokens, title: &str, open_default: bool, body: impl FnOnce(&mut egui::Ui)) {
     let id = ui.id().with(("section", title));
     let mut open = ui.data_mut(|d| *d.get_temp_mut_or(id, open_default));
-    let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(r.expand2(Vec2::new(8.0, 0.0)), CornerRadius::same(theme::R_CONTROL), t.subtle_hover);
     }

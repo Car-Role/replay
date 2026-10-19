@@ -23,6 +23,7 @@ enum Step {
     Games,
     GameDetail,
     SettingsGeneral,
+    Focus,
     SettingsRecording,
     SettingsSharing,
     SettingsAbout,
@@ -33,7 +34,7 @@ enum Step {
     Empty,
 }
 
-const STEPS: [(Step, &str); 16] = [
+const STEPS: [(Step, &str); 17] = [
     (Step::Clips, "01-clips"),
     (Step::ClipsByGame, "02-clips-by-game"),
     (Step::Selecting, "03-clips-selecting"),
@@ -42,6 +43,7 @@ const STEPS: [(Step, &str); 16] = [
     (Step::Games, "06-games"),
     (Step::GameDetail, "07-game"),
     (Step::SettingsGeneral, "08-settings-general"),
+    (Step::Focus, "08b-keyboard-focus"),
     (Step::SettingsRecording, "09-settings-recording"),
     (Step::SettingsSharing, "10-settings-sharing"),
     (Step::SettingsAbout, "11-settings-about"),
@@ -156,6 +158,9 @@ impl LibraryApp {
             Step::SettingsGeneral => {
                 self.page = Page::Settings;
                 self.settings.show(super::settings::Category::General);
+            }
+            Step::Focus => {
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new("snapshot-focus"), true));
             }
             Step::SettingsRecording => self.settings.show(super::settings::Category::Recording),
             Step::SettingsSharing => self.settings.show(super::settings::Category::Sharing),

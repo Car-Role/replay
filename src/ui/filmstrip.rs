@@ -84,13 +84,12 @@ pub fn shrink(src: &[u8], w: usize, h: usize, th: usize) -> (usize, usize, Vec<u
         for x in 0..tw {
             let x0 = x * w / tw;
             let x1 = ((x + 1) * w / tw).max(x0 + 1);
+            // Average every pixel in the box, so thin bright details do not
+            // turn into speckles.
             let mut acc = [0u32; 3];
             let mut n = 0u32;
-            // Sample a 3x3 grid inside the box; enough for a thumbnail.
-            for sy in 0..3 {
-                let yy = y0 + (y1 - y0) * sy / 3;
-                for sx in 0..3 {
-                    let xx = x0 + (x1 - x0) * sx / 3;
+            for yy in y0..y1.min(h) {
+                for xx in x0..x1.min(w) {
                     let i = (yy * w + xx) * 4;
                     acc[0] += u32::from(src[i]);
                     acc[1] += u32::from(src[i + 1]);
@@ -98,6 +97,7 @@ pub fn shrink(src: &[u8], w: usize, h: usize, th: usize) -> (usize, usize, Vec<u
                     n += 1;
                 }
             }
+            let n = n.max(1);
             let o = (y * tw + x) * 4;
             out[o] = (acc[0] / n) as u8;
             out[o + 1] = (acc[1] / n) as u8;

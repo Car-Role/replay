@@ -454,6 +454,12 @@ pub fn subtle(ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
 /// Fluent ToggleSwitch: 40 x 20 track, 12 px knob (14 px on hover).
 pub fn toggle(ui: &mut Ui, t: &Tokens, on: &mut bool) -> Response {
     let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(40.0, 20.0), Sense::click());
+    // `--snapshot` asks the first toggle on a page to take focus once.
+    let snap = egui::Id::new("snapshot-focus");
+    if ui.ctx().data(|d| d.get_temp::<bool>(snap)).unwrap_or(false) {
+        ui.ctx().data_mut(|d| d.insert_temp(snap, false));
+        resp.request_focus();
+    }
     if resp.clicked() {
         *on = !*on;
         resp.mark_changed();
@@ -591,7 +597,7 @@ pub fn combo<'a>(id: impl egui::AsIdSalt + std::fmt::Debug) -> egui::ComboBox<'a
 /// control column.
 pub fn slider_row(ui: &mut Ui, t: &Tokens, value: String, v: &mut u32, range: std::ops::RangeInclusive<u32>, log: bool) -> Response {
     let (r, _) = ui.allocate_exact_size(Vec2::new(60.0, 20.0), Sense::hover());
-    ui.painter().text(egui::pos2(r.right(), r.center().y), egui::Align2::RIGHT_CENTER, value, FontId::proportional(14.0), t.text2);
+    ui.painter().text(egui::pos2(r.left() + 4.0, r.center().y), egui::Align2::LEFT_CENTER, value, FontId::proportional(14.0), t.text2);
     slider(ui, t, v, range, log, CONTROL_COL - 68.0)
 }
 
@@ -629,8 +635,8 @@ pub fn slider(ui: &mut Ui, t: &Tokens, v: &mut u32, range: std::ops::RangeInclus
     let cy = rect.center().y;
     let p = ui.painter();
     let rail = |a: f32, b: f32, c: Color32| p.rect_filled(egui::Rect::from_min_max(egui::pos2(a, cy - 2.0), egui::pos2(b, cy + 2.0)), 2.0, c);
-    rail(x0, x1, if t.dark { argb(0xFF8A_8A8A) } else { argb(0xFF86_8686) });
-    rail(x0, cx, if ui.is_enabled() { t.accent } else { t.text_disabled });
+    rail(rect.left(), rect.right(), if t.dark { argb(0xFF8A_8A8A) } else { argb(0xFF86_8686) });
+    rail(rect.left(), cx, if ui.is_enabled() { t.accent } else { t.text_disabled });
     let outer = if t.dark { argb(0xFF45_4545) } else { argb(0xFFFF_FFFF) };
     p.circle(egui::pos2(cx, cy), 10.0, outer, Stroke::new(1.0, t.control_stroke));
     let inner = if resp.is_pointer_button_down_on() { 5.0 } else if resp.hovered() { 7.0 } else { 6.0 };
@@ -638,6 +644,37 @@ pub fn slider(ui: &mut Ui, t: &Tokens, v: &mut u32, range: std::ops::RangeInclus
     focus_ring(ui, t, &resp, rect, 4.0);
     let value = f64::from(*v);
     resp.widget_info(|| egui::WidgetInfo::slider(true, value, ""));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A tag chip: neutral, with a quiet remove mark.
+pub fn tag_chip(ui: &mut Ui, t: &Tokens, tag: &str) -> Response {
+    let galley = ui.painter().layout_no_wrap(format!("#{tag}"), FontId::proportional(14.0), t.text);
+    let w = galley.size().x + 12.0 + 22.0;
+    let (r, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::click());
+    let fill = if resp.hovered() { t.control_hover } else { t.control };
+    ui.painter().rect(r, CornerRadius::same(14), fill, Stroke::new(1.0, t.control_stroke), egui::StrokeKind::Inside);
+    ui.painter().galley(egui::pos2(r.left() + 12.0, r.center().y - galley.size().y / 2.0), galley, t.text);
+    let x = egui::pos2(r.right() - 14.0, r.center().y);
+    ui.painter().text(x, egui::Align2::CENTER_CENTER, "\u{00d7}", FontId::proportional(16.0), if resp.hovered() { t.text } else { t.text2 });
+    focus_ring(ui, t, &resp, r, 14.0);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Remove tag {tag}")));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A 32 px subtle icon button (no fill or edge until hover).
+pub fn icon_button(ui: &mut Ui, t: &Tokens, text: RichText, name: &str) -> Response {
+    let (r, resp) = ui.allocate_exact_size(Vec2::splat(CONTROL_H), Sense::click());
+    if resp.is_pointer_button_down_on() {
+        ui.painter().rect_filled(r, R_CONTROL, t.subtle_pressed);
+    } else if resp.hovered() {
+        ui.painter().rect_filled(r, R_CONTROL, t.subtle_hover);
+    }
+    let galley = WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, TextStyle::Body);
+    let pos = r.center() - galley.size() / 2.0;
+    ui.painter().galley(pos, galley, t.text);
+    focus_ring(ui, t, &resp, r, f32::from(R_CONTROL));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -705,7 +742,7 @@ pub fn rail_button(ui: &mut Ui, t: &Tokens, icons: bool, c: char, label: &str, r
 
 /// A 2 px focus ring around `rect` when `resp` has keyboard focus.
 pub fn focus_ring(ui: &Ui, t: &Tokens, resp: &Response, rect: egui::Rect, radius: f32) {
-    if resp.has_focus() {
+    if resp.has_focus() || ui.ctx().memory(|m| m.focused() == Some(resp.id)) {
         ui.painter().rect_stroke(rect.expand(3.0), radius + 3.0, Stroke::new(2.0, t.text), egui::StrokeKind::Outside);
     }
 }

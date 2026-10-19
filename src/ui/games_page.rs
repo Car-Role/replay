@@ -258,7 +258,7 @@ impl LibraryApp {
             }
             ui.add_space(8.0);
             let mut v = enabled;
-            if theme::toggle(ui, t, &mut v).on_hover_text(if enabled { "Recording is on" } else { "Recording is off" }).changed() {
+            if theme::toggle(ui, t, &mut v).on_hover_text(format!("Record {}: {}", g.name, if enabled { "on" } else { "off" })).changed() {
                 click = Some(RowClick::Toggle(v));
             }
         });
