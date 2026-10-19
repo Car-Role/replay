@@ -476,7 +476,17 @@ impl Editor {
                         let game = self.path.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                         let shown = super::clips::friendly_title(&self.path, &game);
                         let r = ui.add(egui::Label::new(RichText::new(&shown).size(18.0).color(t.text)).truncate().sense(Sense::click()));
-                        if r.hovered() && icons {
+                        // A default name invites a real one.
+                        let default_name = shown != name;
+                        let hint = if default_name { "  \u{00b7}  Add a name" } else { "" };
+                        if !hint.is_empty() {
+                            let at = Pos2::new(r.rect.right() + 2.0, r.rect.center().y);
+                            let hr = ui.painter().text(at, Align2::LEFT_CENTER, hint, FontId::proportional(14.0), t.text3);
+                            let hresp = ui.interact(hr, r.id.with("add-name"), Sense::click());
+                            if hresp.on_hover_cursor(egui::CursorIcon::Text).clicked() {
+                                self.name_edit = Some(String::new());
+                            }
+                        } else if r.hovered() && icons {
                             let at = Pos2::new(r.rect.right() + 10.0, r.rect.center().y);
                             ui.painter().text(at, Align2::LEFT_CENTER, icon::EDIT, FontId::new(14.0, FontFamily::Name(theme::ICONS.into())), t.text2);
                         }
@@ -892,7 +902,7 @@ impl Editor {
                     section(ui, t, "Trim", true, |ui| {
                         ui.columns(3, |cols| {
                             for (col, (k, v)) in cols.iter_mut().zip([("Start", self.in_point), ("End", self.out_point), ("Length", self.out_point - self.in_point)]) {
-                                col.label(theme::caption(k).color(t.text2));
+                                col.label(theme::caption(k).color(t.text3));
                                 col.label(RichText::new(theme::fmt_time(v)).color(t.text2));
                             }
                         });

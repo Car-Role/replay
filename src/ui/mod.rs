@@ -578,7 +578,7 @@ impl LibraryApp {
             ui.painter().galley(Pos2::new(r.left() + 44.0, r.top() + 22.0), g, t.text2);
         }
         resp.on_hover_text(format!("{line}\n{sub}"));
-        ui.add_space(8.0);
+        ui.add_space(if compact { 12.0 } else { 8.0 });
         let save_key = self.shared.cfg.hotkeys.save_focused.clone();
         let rec_key = self.shared.cfg.hotkeys.record.clone();
         if !self.recorder_running {
@@ -815,7 +815,7 @@ impl LibraryApp {
                     ui.label(theme::caption(if known_tags.is_empty() { "Ideas" } else { "Tags you use" }).color(t.text2));
                     ui.horizontal_wrapped(|ui| {
                         for k in unused.iter().take(12) {
-                            if theme::chip(ui, t, format!("#{k}"), false).clicked() {
+                            if theme::idea_chip(ui, t, k).on_hover_text("Add this tag").clicked() {
                                 if !text.trim().is_empty() {
                                     text.push_str(", ");
                                 }
@@ -944,50 +944,43 @@ impl LibraryApp {
                 m.clips.remove(i);
             }
             ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                let label = m.music.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "No music".into());
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.label(RichText::new("Music").color(t.text));
-                    ui.add(egui::Label::new(theme::caption(label).color(t.text2)).truncate());
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if m.music.is_some() && theme::subtle(ui, "Remove").clicked() {
-                        m.music = None;
-                    }
-                    if theme::button(ui, "Choose music\u{2026}", true).clicked()
-                        && let Some(p) = crate::sys::shell::pick_audio()
-                    {
-                        m.music = Some(p);
-                    }
-                });
-            });
-            ui.add_space(6.0);
-            let mix_row = |ui: &mut egui::Ui, label: &str, v: &mut u32, max: u32| {
+            // One form: a 140 px label column and controls from one edge,
+            // every row 32 px tall on a 40 px pitch.
+            ui.spacing_mut().item_spacing.y = 8.0;
+            fn form_row(ui: &mut egui::Ui, t: &Tokens, label: &str, control: impl FnOnce(&mut egui::Ui)) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    let (lr, _) = ui.allocate_exact_size(Vec2::new(140.0, 28.0), Sense::hover());
+                    let (lr, _) = ui.allocate_exact_size(Vec2::new(140.0, theme::CONTROL_H), Sense::hover());
                     ui.painter().text(lr.left_center(), Align2::LEFT_CENTER, label, egui::FontId::proportional(14.0), t.text);
-                    let w = ui.available_width() - 60.0 - 8.0;
-                    theme::slider(ui, t, v, 0..=max, false, w);
-                    let (vr, _) = ui.allocate_exact_size(Vec2::new(60.0, 28.0), Sense::hover());
-                    ui.painter().text(vr.right_center(), Align2::RIGHT_CENTER, format!("{v}%"), egui::FontId::proportional(14.0), t.text2);
-                });
-            };
-            mix_row(ui, "Game sound", &mut m.game_volume, 200);
-            if m.music.is_some() {
-                mix_row(ui, "Music", &mut m.music_volume, 100);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Fade out at the end").color(t.text));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        theme::toggle(ui, t, &mut m.fade_out);
-                    });
+                    ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), theme::CONTROL_H), egui::Layout::left_to_right(egui::Align::Center), control);
                 });
             }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let (lr, _) = ui.allocate_exact_size(Vec2::new(140.0, 32.0), Sense::hover());
-                ui.painter().text(lr.left_center(), Align2::LEFT_CENTER, "Size", egui::FontId::proportional(14.0), t.text);
+            form_row(ui, t, "Music", |ui| {
+                if theme::button(ui, "Choose music\u{2026}", true).clicked()
+                    && let Some(p) = crate::sys::shell::pick_audio()
+                {
+                    m.music = Some(p);
+                }
+                let label = m.music.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "No music".into());
+                ui.add(egui::Label::new(theme::caption(label).color(t.text2)).truncate());
+                if m.music.is_some() && theme::subtle(ui, "Remove").clicked() {
+                    m.music = None;
+                }
+            });
+            let slider = |ui: &mut egui::Ui, v: &mut u32, max: u32| {
+                let w = ui.available_width() - 60.0 - 8.0;
+                theme::slider(ui, t, v, 0..=max, false, w);
+                let (vr, _) = ui.allocate_exact_size(Vec2::new(60.0, theme::CONTROL_H), Sense::hover());
+                ui.painter().text(vr.right_center(), Align2::RIGHT_CENTER, format!("{v}%"), egui::FontId::proportional(14.0), t.text2);
+            };
+            form_row(ui, t, "Game sound", |ui| slider(ui, &mut m.game_volume, 200));
+            if m.music.is_some() {
+                form_row(ui, t, "Music volume", |ui| slider(ui, &mut m.music_volume, 100));
+                form_row(ui, t, "Fade out at the end", |ui| {
+                    theme::toggle(ui, t, &mut m.fade_out);
+                });
+            }
+            form_row(ui, t, "Size", |ui| {
                 let label = |s: Option<u32>| match s {
                     None => "Original size".to_string(),
                     Some(10) => "Discord (10 MB)".to_string(),
@@ -1001,17 +994,20 @@ impl LibraryApp {
                     }
                 });
             });
-            ui.horizontal(|ui| {
-                let (lr, _) = ui.allocate_exact_size(Vec2::new(140.0, 32.0), Sense::hover());
-                ui.painter().text(lr.left_center(), Align2::LEFT_CENTER, "Shape", egui::FontId::proportional(14.0), t.text);
+            form_row(ui, t, "Shape", |ui| {
                 let w = ui.available_width();
-                let shapes = [("Landscape", "As recorded"), ("Vertical 9:16", "For Shorts, TikTok and Reels")];
+                let shapes = [("Landscape", "As recorded"), ("Vertical 9:16", "Keeps the centre of each clip")];
                 if let Some(i) = theme::segmented(ui, t, &shapes, usize::from(m.vertical), w) {
                     m.vertical = i == 1;
                 }
             });
             ui.add_space(4.0);
-            ui.label(theme::caption("Clips recorded with different settings, a size limit or a vertical crop are encoded again, which takes longer.").color(t.text3));
+            let note = if m.vertical {
+                "Vertical keeps the centre of each clip. Encoding again takes longer."
+            } else {
+                "Clips with different settings or a size limit are encoded again, which takes longer."
+            };
+            ui.label(theme::caption(note).color(t.text3));
         });
         let Some(ok) = result else { return };
         let m = self.montage.take().expect("open");

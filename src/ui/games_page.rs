@@ -249,7 +249,11 @@ impl LibraryApp {
                 let secs = self.shared.cfg.for_game(&g.exe).replay_seconds;
                 parts.insert(0, format!("Buffering {}", theme::fmt_short(f64::from(secs))));
             }
-            if enabled {
+            if enabled && g.recording {
+                // "Buffering 2:00" already says the length.
+                let c = self.shared.cfg.for_game(&g.exe);
+                parts.push(format!("{} fps  \u{00b7}  {}  \u{00b7}  {}", c.video.fps, c.video.resolution.label(), theme::fmt_mbps(c.video.bitrate_kbps)));
+            } else if enabled {
                 parts.push(self.quality_line(&g.exe));
             } else {
                 parts.push(g.how.clone());

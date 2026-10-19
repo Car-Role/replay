@@ -662,6 +662,25 @@ pub fn tag_chip(ui: &mut Ui, t: &Tokens, tag: &str) -> Response {
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// A suggested tag: transparent with a "+", filled only on hover.
+pub fn idea_chip(ui: &mut Ui, t: &Tokens, tag: &str) -> Response {
+    let galley = ui.painter().layout_no_wrap(format!("+  #{tag}"), FontId::proportional(14.0), t.text2);
+    let (r, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 24.0, 28.0), Sense::click());
+    let hovered = resp.hovered();
+    ui.painter().rect(
+        r,
+        CornerRadius::same(14),
+        if hovered { t.control } else { Color32::TRANSPARENT },
+        Stroke::new(1.0, argb(0x24FF_FFFF)),
+        egui::StrokeKind::Inside,
+    );
+    let color = if hovered { t.text } else { t.text2 };
+    ui.painter().galley_with_override_text_color(egui::pos2(r.left() + 12.0, r.center().y - galley.size().y / 2.0), galley, color);
+    focus_ring(ui, t, &resp, r, 14.0);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Add tag {tag}")));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// A 32 px subtle icon button (no fill or edge until hover).
 pub fn icon_button(ui: &mut Ui, t: &Tokens, text: RichText, name: &str) -> Response {
     let (r, resp) = ui.allocate_exact_size(Vec2::splat(CONTROL_H), Sense::click());

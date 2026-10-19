@@ -225,11 +225,11 @@ impl SettingsPage {
             });
         });
         let one = theme::fmt_bytes(d.recording_memory(&["(any game)"]));
-        let desc = format!("Higher is sharper; lower uses less memory and disk. About {one} of memory while a game records");
-        theme::setting(ui, t, false, None, "Bitrate", &desc, |ui| {
+        theme::setting(ui, t, false, None, "Bitrate", "Higher is sharper; lower uses less memory and disk.", |ui| {
             let mut kbps = d.video.bitrate_kbps;
             let label = theme::fmt_mbps(kbps);
-            if theme::slider_row(ui, t, label, &mut kbps, 500..=150_000, true).changed() {
+            let r = theme::slider_row(ui, t, label, &mut kbps, 500..=150_000, true).on_hover_text(format!("About {one} of memory while a game records"));
+            if r.changed() {
                 // Fine steps for low bitrates, whole Mbit/s above 10.
                 let step = if kbps < 10_000 { 100 } else { 1000 };
                 d.video.bitrate_kbps = ((kbps + step / 2) / step * step).max(500);
