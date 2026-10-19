@@ -38,6 +38,12 @@ fn main() {
     update::finish_pending();
 
     match mode {
+        "--snapshot" => {
+            logger::init("probe", false);
+            sys::init_ui();
+            let dir = args.get(1).map(std::path::PathBuf::from).unwrap_or_else(|| paths::data_dir().join("snapshots"));
+            ui::snapshot(dir);
+        }
         "--library" | "--settings" | "--games" => {
             logger::init("library", cfg!(debug_assertions));
             sys::init_ui();

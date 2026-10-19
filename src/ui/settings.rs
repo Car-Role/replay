@@ -2,7 +2,9 @@
 //! setting's name and description on the left and its control on the right.
 //! A save bar appears only when something changed.
 
-use eframe::egui::{self, CornerRadius, Margin, RichText, Stroke};
+use std::time::{Duration, Instant};
+
+use eframe::egui::{self, Margin, RichText, Vec2};
 
 use super::Shared;
 use super::theme::{self, Tokens, icon};
@@ -19,8 +21,54 @@ pub enum UpdateState {
     Failed(String),
 }
 
+/// Settings categories, in the order of the list.
+#[derive(PartialEq, Clone, Copy)]
+pub enum Category {
+    General,
+    Recording,
+    Audio,
+    Webcam,
+    Hotkeys,
+    Detection,
+    Storage,
+    Sharing,
+    About,
+}
+
+impl Category {
+    const ALL: [(Category, char); 9] = [
+        (Category::General, icon::SETTINGS),
+        (Category::Recording, icon::VIDEO),
+        (Category::Audio, icon::VOLUME),
+        (Category::Webcam, icon::RECORD),
+        (Category::Hotkeys, icon::KEYBOARD),
+        (Category::Detection, icon::GAME),
+        (Category::Storage, icon::FOLDER),
+        (Category::Sharing, icon::SHARE),
+        (Category::About, icon::INFO),
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Category::General => "General",
+            Category::Recording => "Recording",
+            Category::Audio => "Audio",
+            Category::Webcam => "Webcam",
+            Category::Hotkeys => "Hotkeys",
+            Category::Detection => "Game detection",
+            Category::Storage => "Storage",
+            Category::Sharing => "Sharing",
+            Category::About => "About",
+        }
+    }
+}
+
 pub struct SettingsPage {
     pub update: UpdateState,
+    category: Category,
+    /// When the draft first differed from the saved settings.
+    changed_at: Option<Instant>,
+    saved_at: Option<Instant>,
     draft: Config,
     include_text: String,
     exclude_text: String,
@@ -46,6 +94,9 @@ impl SettingsPage {
                 None => UpdateState::Idle,
             },
             draft: cfg.clone(),
+            category: Category::General,
+            changed_at: None,
+            saved_at: None,
             include_text: cfg.detection.include.join("\n"),
             exclude_text: cfg.detection.exclude.join("\n"),
             password: String::new(),
@@ -64,67 +115,88 @@ impl SettingsPage {
         let encoders = std::mem::take(&mut self.encoders);
         let cameras = std::mem::take(&mut self.cameras);
         let update = self.update.clone();
-        *self = Self { mics, encoders, cameras, update, ..Self::new(cfg) };
+        let category = self.category;
+        *self = Self { mics, encoders, cameras, update, category, ..Self::new(cfg) };
     }
 
     /// Returns true when the clips folder changed (the list must rescan).
+    pub fn show(&mut self, c: Category) {
+        self.category = c;
+    }
+
+    /// Returns true when the clips folder changed (the list must rescan).
+    /// Changes save by themselves a moment after the last edit.
     pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared) -> bool {
         let t = theme::tokens(ui.ctx());
         let icons = shared.icons;
-        let mut folder_changed = false;
-        let dirty = self.dirty(&shared.cfg);
-
-        ui.label(theme::title("Settings").color(t.text));
-        ui.add_space(8.0);
-        let bar_h = if dirty { 64.0 } else { 0.0 };
-        let scroll_h = (ui.available_height() - bar_h).max(100.0);
-        egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(scroll_h).show(ui, |ui| {
-            ui.set_max_width(980.0);
-            ui.spacing_mut().item_spacing.y = 4.0;
-            self.recording(ui, &t, icons);
-            self.storage(ui, &t, icons);
-            self.audio(ui, &t, icons);
-            self.webcam(ui, &t, icons);
-            self.hotkeys(ui, &t, icons);
-            self.detection(ui, &t, icons);
-            self.sharing(ui, &t, icons, shared);
-            self.updates(ui, &t, icons, shared);
-            self.general(ui, &t, icons);
-            ui.add_space(24.0);
+        ui.horizontal(|ui| {
+            ui.label(theme::title("Settings").color(t.text));
+            if self.saved_at.is_some_and(|s| s.elapsed() < Duration::from_secs(2)) {
+                ui.add_space(8.0);
+                if icons {
+                    ui.label(theme::glyph(icon::CHECK, 14.0).color(t.success));
+                }
+                ui.label(theme::caption("Saved").color(t.text2));
+                ui.ctx().request_repaint_after(Duration::from_millis(500));
+            }
         });
+        ui.add_space(16.0);
+        let area = ui.available_rect_before_wrap();
+        let list_w = 200.0;
+        let list = egui::Rect::from_min_size(area.min, Vec2::new(list_w, area.height()));
+        let body = egui::Rect::from_min_max(egui::pos2(area.left() + list_w + 24.0, area.top()), area.max);
+        let mut lu = ui.new_child(egui::UiBuilder::new().max_rect(list).layout(egui::Layout::top_down(egui::Align::Min)));
+        lu.spacing_mut().item_spacing.y = 2.0;
+        for (c, glyph) in Category::ALL {
+            if theme::nav_item(&mut lu, &t, icons, glyph, c.label(), self.category == c, false).clicked() {
+                self.category = c;
+            }
+        }
+        let mut bu = ui.new_child(egui::UiBuilder::new().max_rect(body).layout(egui::Layout::top_down(egui::Align::Min)));
+        egui::ScrollArea::vertical().id_salt(self.category.label()).auto_shrink([false, false]).show(&mut bu, |ui| {
+            ui.set_max_width(ui.available_width().min(1000.0));
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.label(theme::subtitle(self.category.label()).color(t.text));
+            ui.add_space(4.0);
+            match self.category {
+                Category::General => self.general(ui, &t, icons),
+                Category::Recording => self.recording(ui, &t, icons),
+                Category::Audio => self.audio(ui, &t, icons),
+                Category::Webcam => self.webcam(ui, &t, icons),
+                Category::Hotkeys => self.hotkeys(ui, &t, icons),
+                Category::Detection => self.detection(ui, &t, icons),
+                Category::Storage => self.storage(ui, &t, icons),
+                Category::Sharing => self.sharing(ui, &t, icons, shared),
+                Category::About => self.updates(ui, &t, icons, shared),
+            }
+            ui.add_space(32.0);
+        });
+        ui.allocate_rect(area, egui::Sense::hover());
 
-        if dirty {
-            ui.add_space(8.0);
-            egui::Frame::new()
-                .fill(t.card)
-                .stroke(Stroke::new(1.0, t.card_stroke))
-                .corner_radius(CornerRadius::same(theme::R_CARD))
-                .inner_margin(Margin::symmetric(16, 10))
-                .show(ui, |ui| {
-                    ui.set_max_width(980.0 - 32.0);
-                    ui.horizontal(|ui| {
-                        if icons {
-                            ui.label(theme::glyph(icon::INFO, 16.0).color(t.accent));
-                        }
-                        ui.label(RichText::new("You have unsaved changes.").color(t.text));
-                        ui.label(theme::caption("Video and audio changes restart recording, so the replay buffers start again.").color(t.text2));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if theme::button(ui, "Discard", true).clicked() {
-                                *self = Self { mics: std::mem::take(&mut self.mics), encoders: std::mem::take(&mut self.encoders), ..Self::new(&shared.cfg) };
-                            }
-                            if theme::primary(ui, &t, theme::label_with_icon(icons, icon::SAVE, "Save"), true).clicked() {
-                                folder_changed = self.save(shared);
-                            }
-                        });
-                    });
-                });
+        // Save a moment after the last change, once no control is held.
+        let mut folder_changed = false;
+        if self.autosave_dirty(&shared.cfg) {
+            let since = *self.changed_at.get_or_insert_with(Instant::now);
+            let holding = ui.input(|i| i.pointer.any_down());
+            if since.elapsed() > Duration::from_millis(600) && !holding && self.hotkeys_valid() {
+                folder_changed = self.save(shared);
+                self.changed_at = None;
+            } else {
+                ui.ctx().request_repaint_after(Duration::from_millis(200));
+            }
+        } else {
+            self.changed_at = None;
         }
         folder_changed
     }
 
+    fn hotkeys_valid(&self) -> bool {
+        let h = &self.draft.hotkeys;
+        [&h.save_focused, &h.save_all, &h.toggle_game, &h.record].iter().filter(|h| !h.trim().is_empty()).all(|h| crate::hotkey::parse(h).is_ok())
+    }
+
     fn recording(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
         let d = &mut self.draft;
-        theme::section(ui, t, "Recording");
         theme::setting(ui, t, icons, Some(icon::CLOCK), "Replay length", "How much recent gameplay a saved clip contains", |ui| {
             ui.label(RichText::new(theme::fmt_short(f64::from(d.replay_seconds))).color(t.text2));
             ui.spacing_mut().slider_width = 220.0;
@@ -190,7 +262,6 @@ impl SettingsPage {
 
     fn storage(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
         let d = &mut self.draft;
-        theme::section(ui, t, "Storage");
         let (n, bytes) = self.usage;
         let used = format!("The clips folder holds {n} {} ({:.1} GB). Favorites are never deleted.", if n == 1 { "clip" } else { "clips" }, bytes as f64 / 1e9);
         theme::setting(ui, t, icons, Some(icon::FOLDER), "Limit the clips folder size", &used, |ui| {
@@ -217,7 +288,6 @@ impl SettingsPage {
 
     fn audio(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
         let d = &mut self.draft;
-        theme::section(ui, t, "Audio");
         theme::setting(ui, t, icons, Some(icon::GAME), "Game audio", "Record only the game's own sound, not chat or music", |ui| {
             theme::toggle(ui, t, &mut d.audio.game_audio);
         });
@@ -255,7 +325,6 @@ impl SettingsPage {
 
     fn webcam(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
         let d = &mut self.draft;
-        theme::section(ui, t, "Webcam");
         let desc = if self.cameras.is_empty() { "No camera was found" } else { "Show your camera in a corner of every recording. The camera is on only while a game records" };
         theme::setting(ui, t, icons, Some(icon::VIDEO), "Webcam in recordings", desc, |ui| {
             theme::toggle(ui, t, &mut d.webcam.enabled);
@@ -289,7 +358,6 @@ impl SettingsPage {
 
     fn hotkeys(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
         let d = &mut self.draft;
-        theme::section(ui, t, "Hotkeys");
         for (label, desc, value) in [
             ("Save a replay", "Saves the game in front", &mut d.hotkeys.save_focused),
             ("Save all games", "Saves every game being recorded", &mut d.hotkeys.save_all),
@@ -316,7 +384,6 @@ impl SettingsPage {
 
     fn detection(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
         let d = &mut self.draft;
-        theme::section(ui, t, "Game detection");
         theme::setting(ui, t, icons, Some(icon::GAME), "Find games automatically", "Games from launchers, game folders and the Windows Game Bar list", |ui| {
             theme::toggle(ui, t, &mut d.detection.enabled);
         });
@@ -348,7 +415,6 @@ impl SettingsPage {
 
     fn sharing(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared) {
         let d = &mut self.draft;
-        theme::section(ui, t, "Sharing");
         theme::setting(ui, t, icons, Some(icon::SHARE), "Upload to", d.share.target.describe(), |ui| {
             egui::ComboBox::from_id_salt("target").width(COMBO_W).selected_text(d.share.target.label()).show_ui(ui, |ui| {
                 for u in UploadTarget::ALL {
@@ -363,9 +429,20 @@ impl SettingsPage {
                 });
                 let saved = !shared.cfg.share.streamable_password_protected.is_empty();
                 let hint = if saved { "Saved. Type to replace it" } else { "" };
+                let mut save_pw = false;
                 theme::setting(ui, t, icons, None, "Streamable password", "Stored encrypted for your user account, and sent only to Streamable", |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.password).password(true).hint_text(hint).desired_width(260.0).margin(Margin::symmetric(10, 7)));
+                    if theme::button(ui, "Save", !self.password.is_empty()).clicked() {
+                        save_pw = true;
+                    }
+                    let r = ui.add(egui::TextEdit::singleline(&mut self.password).password(true).hint_text(hint).desired_width(220.0).margin(Margin::symmetric(10, 7)));
+                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.password.is_empty() {
+                        save_pw = true;
+                    }
                 });
+                if save_pw {
+                    self.save(shared);
+                    shared.toast("Password saved.", false);
+                }
             }
             UploadTarget::Catbox => {}
             UploadTarget::Litterbox => {
@@ -432,7 +509,14 @@ impl SettingsPage {
     }
 
     fn updates(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared) {
-        theme::section(ui, t, "Updates");
+        theme::setting(ui, t, icons, Some(icon::INFO), &format!("Replay {}", crate::update::CURRENT), "Instant replay for Windows games. Free and open source (MIT)", |ui| {
+            if theme::button(ui, "Report a problem", true).clicked() {
+                crate::sys::shell::open_url("https://github.com/Car-Role/replay/issues");
+            }
+            if theme::subtle(ui, RichText::new("Website").color(t.accent)).clicked() {
+                crate::sys::shell::open_url("https://car-role.github.io/replay/");
+            }
+        });
         let d = &mut self.draft;
         theme::setting(ui, t, icons, Some(icon::UPDATE), "Automatic updates", "Check once a day and download new versions in the background", |ui| {
             theme::toggle(ui, t, &mut d.updates.auto_check);
@@ -495,7 +579,6 @@ impl SettingsPage {
 
     fn general(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
         let d = &mut self.draft;
-        theme::section(ui, t, "General");
         theme::setting(ui, t, icons, Some(icon::INFO), "Notifications", "Show a Windows notification when a replay is saved", |ui| {
             theme::toggle(ui, t, &mut d.notify);
         });
@@ -538,9 +621,11 @@ impl SettingsPage {
         c.sanitized()
     }
 
-    fn dirty(&self, current: &Config) -> bool {
+    /// True when something other than the password changed. The password
+    /// saves only with its button, so a half-typed one is never stored.
+    fn autosave_dirty(&self, current: &Config) -> bool {
         let saved_headers = crate::sys::secret::unprotect(&current.share.custom.headers_protected).unwrap_or_default();
-        !self.password.is_empty() || self.custom_headers != saved_headers || self.built(current) != *current
+        self.custom_headers.trim() != saved_headers.trim() || self.built(current) != *current
     }
 
     fn save(&mut self, shared: &mut Shared) -> bool {
@@ -572,7 +657,7 @@ impl SettingsPage {
                 self.draft = new;
                 self.password.clear();
                 crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::Reload);
-                shared.toast("Settings saved.", false);
+                self.saved_at = Some(Instant::now());
                 folder_changed
             }
             Err(e) => {

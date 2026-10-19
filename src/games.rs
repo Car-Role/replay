@@ -26,6 +26,9 @@ pub struct GameRecord {
     /// True while a full session recording of it runs.
     #[serde(default)]
     pub capturing: bool,
+    /// When that session recording started (Unix seconds).
+    #[serde(default)]
+    pub capture_started: u64,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
@@ -88,6 +91,7 @@ impl GameDb {
                 last_seen: now,
                 recording: false,
                 capturing: false,
+                capture_started: 0,
             }),
         }
     }
@@ -112,6 +116,7 @@ impl GameDb {
             let on = exes.contains(&g.exe);
             if g.capturing != on {
                 g.capturing = on;
+                g.capture_started = if on { now_secs() } else { 0 };
                 changed = true;
             }
         }

@@ -1,5 +1,7 @@
-//! Clip editor: preview, filmstrip trim bar that scrubs the preview while
-//! you drag, audio mix, save and share.
+//! Clip editor, a full page (see docs/design.md): a command bar on top
+//! (back, name, favorite, more, share), the video on black in the middle, an
+//! inspector on the right (Trim, Audio, Export, Details), and a full-width
+//! timeline at the bottom (transport, filmstrip with trim handles, waveform).
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -22,6 +24,8 @@ use crate::sys::player::{AudioOut, VideoDecoder};
 pub enum Action {
     Back,
     Delete(PathBuf),
+    Favorite(PathBuf, bool),
+    Rename(PathBuf, String),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -67,7 +71,11 @@ impl Preset {
 
 const THUMBS: usize = 24;
 const THUMB_H: usize = 64;
-const STRIP_H: f32 = 64.0;
+const STRIP_H: f32 = 56.0;
+/// Waveform strip under the filmstrip.
+const WAVE_H: f32 = 28.0;
+const WAVE_BUCKETS: usize = 800;
+const INSPECTOR_W: f32 = 320.0;
 const HANDLE_W: f32 = 12.0;
 
 pub struct Editor {
@@ -108,11 +116,20 @@ pub struct Editor {
     last_scrub: Instant,
     film_rx: Option<Receiver<Thumb>>,
     film: Vec<Option<TextureHandle>>,
+    /// Peak level (0..1) per slice of the clip, for the waveform strip.
+    waveform: Vec<f32>,
+    /// The name while it is being edited in the command bar.
+    name_edit: Option<String>,
+    codec: String,
 }
 
 impl Editor {
     pub fn open(ctx: &egui::Context, path: &Path, cfg: &Config) -> Self {
         let info = crate::mux::reader::read(path);
+        let codec = match info.as_ref().ok().and_then(|m| m.video()).map(|v| &v.kind) {
+            Some(crate::mux::reader::TrackKindIn::Video { codec, .. }) => codec.label().to_string(),
+            _ => String::new(),
+        };
         let (video_size, video_kbps) = match &info {
             Ok(m) => (
                 match m.video().map(|v| &v.kind) {
@@ -196,11 +213,19 @@ impl Editor {
             last_scrub: Instant::now(),
             film_rx,
             film: (0..THUMBS).map(|_| None).collect(),
+            waveform: Vec::new(),
+            name_edit: None,
+            codec,
         }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// For `--snapshot`: show the vertical export with its crop frame.
+    pub fn snapshot_vertical(&mut self) {
+        self.vertical = true;
     }
 
     fn clock(&self) -> f64 {
@@ -254,6 +279,7 @@ impl Editor {
             self.audio_rx = None;
             match r {
                 Ok(tracks) if tracks.game.is_some() || tracks.mic.is_some() => {
+                    self.waveform = waveform(&tracks);
                     let a = AudioOut::start(tracks);
                     a.set_gains(self.game_gain, self.mic_gain);
                     a.seek(self.cursor);
@@ -364,85 +390,175 @@ impl Editor {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared) -> Option<Action> {
+    pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared, favorite: bool) -> Option<Action> {
         let ctx = ui.ctx().clone();
         let t = theme::tokens(&ctx);
         let icons = shared.icons;
         self.pump(&ctx);
         self.keyboard(&ctx);
-        let mut action = None;
+        let mut action = self.command_bar(ui, &t, icons, shared, favorite);
+        ui.add_space(8.0);
+        if let Some(e) = &self.error {
+            ui.add_space(24.0);
+            ui.label(RichText::new(e).color(t.critical));
+            return action;
+        }
 
-        // Header: back, title, details.
+        // Timeline height, then the preview and inspector above it.
+        let dock_h = 44.0 + STRIP_H + WAVE_H + 60.0;
+        let full = ui.available_rect_before_wrap();
+        let top = Rect::from_min_max(full.min, Pos2::new(full.right(), (full.bottom() - dock_h - 8.0).max(full.top() + 160.0)));
+        let dock = Rect::from_min_max(Pos2::new(full.left(), top.bottom() + 8.0), full.max);
+        let side = full.width() >= 860.0;
+        let preview = if side { Rect::from_min_max(top.min, Pos2::new(top.right() - INSPECTOR_W - 12.0, top.bottom())) } else { top };
+        let mut pv = ui.new_child(egui::UiBuilder::new().max_rect(preview));
+        self.preview(&mut pv, &t, icons, preview);
+        if side {
+            let insp = Rect::from_min_max(Pos2::new(preview.right() + 12.0, top.top()), top.max);
+            let mut iu = ui.new_child(egui::UiBuilder::new().max_rect(insp).layout(egui::Layout::top_down(egui::Align::Min)));
+            if let Some(a) = self.inspector(&mut iu, &t, icons, shared) {
+                action = Some(a);
+            }
+        }
+        let mut du = ui.new_child(egui::UiBuilder::new().max_rect(dock).layout(egui::Layout::top_down(egui::Align::Min)));
+        self.transport(&mut du, &t, icons);
+        self.trim_bar(&mut du, &t);
+        if !side {
+            // Narrow windows: the inspector goes in a window of its own.
+            egui::Window::new("Clip").default_pos(Pos2::new(full.right() - INSPECTOR_W, full.top() + 60.0)).default_width(INSPECTOR_W).show(&ctx, |ui| {
+                if let Some(a) = self.inspector(ui, &t, icons, shared) {
+                    action = Some(a);
+                }
+            });
+        }
+        ui.allocate_rect(full, Sense::hover());
+        action
+    }
+
+    /// Back, the clip name (click to rename), then favorite, more and share.
+    fn command_bar(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared, favorite: bool) -> Option<Action> {
+        let ctx = ui.ctx().clone();
+        let mut action = None;
+        let busy = !shared.jobs.is_empty();
         ui.horizontal(|ui| {
-            if theme::subtle(ui, theme::label_with_icon(icons, icon::BACK, if icons { "" } else { "Back" }))
-                .on_hover_text("Back to clips")
-                .clicked()
-            {
+            ui.set_min_height(44.0);
+            if theme::subtle(ui, theme::label_with_icon(icons, icon::BACK, if icons { "" } else { "Back" })).on_hover_text("Back to clips (Esc)").clicked() {
                 action = Some(Action::Back);
             }
             ui.add_space(4.0);
             ui.vertical(|ui| {
                 let name = self.path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-                ui.add(egui::Label::new(theme::subtitle(name).color(t.text)).truncate());
+                match &mut self.name_edit {
+                    Some(text) => {
+                        let r = ui.add(egui::TextEdit::singleline(text).font(FontId::proportional(18.0)).desired_width(420.0).margin(egui::Margin::symmetric(6, 2)));
+                        r.request_focus();
+                        if ui.input(|i| i.key_pressed(Key::Enter)) {
+                            let new = text.trim().to_string();
+                            if !new.is_empty() && new != name {
+                                action = Some(Action::Rename(self.path.clone(), new));
+                            }
+                            self.name_edit = None;
+                        } else if ui.input(|i| i.key_pressed(Key::Escape)) || r.lost_focus() {
+                            self.name_edit = None;
+                        }
+                    }
+                    None => {
+                        let r = ui.add(egui::Label::new(RichText::new(&name).size(18.0).color(t.text)).truncate().sense(Sense::click()));
+                        if r.on_hover_text("Click to rename").on_hover_cursor(egui::CursorIcon::Text).clicked() {
+                            self.name_edit = Some(name.clone());
+                        }
+                    }
+                }
                 let game = self.path.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                ui.label(
-                    theme::caption(format!("{game}  ·  {}  ·  {:.1} MB", theme::fmt_short(self.duration), self.size_bytes as f64 / 1e6))
-                        .color(t.text2),
-                );
+                ui.label(theme::caption(format!("{game}  \u{00b7}  {}  \u{00b7}  {:.1} MB", theme::fmt_short(self.duration), self.size_bytes as f64 / 1e6)).color(t.text2));
             });
-        });
-        ui.add_space(12.0);
-        if let Some(e) = &self.error {
-            theme::card(&t).show(ui, |ui| {
-                ui.label(RichText::new(e).color(t.critical));
-            });
-            return action;
-        }
-
-        let side_w = 320.0;
-        if ui.available_width() >= 980.0 {
-            ui.horizontal_top(|ui| {
-                let main_w = ui.available_width() - side_w - 16.0;
-                let h = ui.available_height();
-                ui.allocate_ui_with_layout(Vec2::new(main_w, h), egui::Layout::top_down(egui::Align::Min), |ui| {
-                    self.main_column(ui, &t, icons);
-                });
-                ui.add_space(16.0);
-                ui.allocate_ui_with_layout(Vec2::new(side_w, h), egui::Layout::top_down(egui::Align::Min), |ui| {
-                    egui::ScrollArea::vertical().id_salt("side").show(ui, |ui| {
-                        if let Some(a) = self.side_panel(ui, &t, icons, shared) {
-                            action = Some(a);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Share: the one accent button on this page.
+                ui.scope(|ui| {
+                    let w = &mut ui.visuals_mut().widgets;
+                    for s in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+                        s.weak_bg_fill = t.accent;
+                        s.bg_stroke = Stroke::NONE;
+                    }
+                    w.hovered.weak_bg_fill = t.accent_hover;
+                    let text = theme::label_with_icon(icons, icon::SHARE, "Share").color(t.on_accent);
+                    ui.menu_button(text, |ui| {
+                        ui.reset_style();
+                        ui.set_min_width(220.0);
+                        if ui.button(theme::label_with_icon(icons, icon::COPY, "Copy file")).on_hover_text("Then paste it into Discord or a chat").clicked() {
+                            if crate::sys::shell::copy_file(&self.path) {
+                                shared.toast("File copied. Paste it with Ctrl+V.", false);
+                            } else {
+                                shared.toast("Could not use the clipboard.", true);
+                            }
+                            ui.close();
+                        }
+                        let ready = crate::share::ready(&shared.cfg.share);
+                        let label = format!("Upload to {}", shared.cfg.share.target.label());
+                        let r = ui.add_enabled(!busy, egui::Button::new(theme::label_with_icon(icons, icon::UPLOAD, &label)));
+                        let r = match ready {
+                            Ok(()) => r.on_hover_text(shared.cfg.share.target.describe()),
+                            Err(why) => r.on_hover_text(why),
+                        };
+                        if r.clicked() {
+                            match ready {
+                                Ok(()) => shared.start_upload(&ctx, self.path.clone()),
+                                Err(why) => shared.toast(why, true),
+                            }
+                            ui.close();
+                        }
+                        if let Some(url) = shared.uploads.get(self.path.to_string_lossy().as_ref()).cloned() {
+                            ui.separator();
+                            if ui.button(theme::label_with_icon(icons, icon::LINK, "Copy link")).on_hover_text(&url).clicked() {
+                                crate::sys::shell::copy_text(&url);
+                                shared.toast("Link copied.", false);
+                                ui.close();
+                            }
                         }
                     });
                 });
-            });
-        } else {
-            egui::ScrollArea::vertical().id_salt("narrow").show(ui, |ui| {
-                self.main_column(ui, &t, icons);
-                ui.add_space(16.0);
-                if let Some(a) = self.side_panel(ui, &t, icons, shared) {
-                    action = Some(a);
+                ui.menu_button(theme::label_with_icon(icons, icon::MORE, if icons { "" } else { "More" }), |ui| {
+                    ui.set_min_width(180.0);
+                    if ui.button("Rename").clicked() {
+                        self.name_edit = Some(self.path.file_stem().unwrap_or_default().to_string_lossy().into_owned());
+                        ui.close();
+                    }
+                    if ui.button("Show in folder").clicked() {
+                        crate::sys::shell::reveal(&self.path);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button(RichText::new("Delete").color(t.critical)).clicked() {
+                        action = Some(Action::Delete(self.path.clone()));
+                        ui.close();
+                    }
+                });
+                let star = if icons { theme::glyph(if favorite { icon::STAR_FILLED } else { icon::STAR }, 16.0) } else { RichText::new(if favorite { "\u{2605}" } else { "\u{2606}" }) };
+                let star = if favorite { star.color(Color32::from_rgb(255, 200, 61)) } else { star };
+                if theme::subtle(ui, star).on_hover_text(if favorite { "Remove from favorites" } else { "Add to favorites" }).clicked() {
+                    action = Some(Action::Favorite(self.path.clone(), !favorite));
                 }
             });
+        });
+        if self.name_edit.is_none() && action.is_none() && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Escape)) {
+            action = Some(Action::Back);
         }
         action
     }
 
-    fn main_column(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
-        // Video: aspect-fit, leaving room for the transport and the trim bar.
-        let reserve = 230.0;
-        let avail = Vec2::new(ui.available_width(), (ui.available_height() - reserve).max(180.0));
-        let (vw, vh) = self.texture.as_ref().map(|t| (t.size()[0] as f32, t.size()[1] as f32)).unwrap_or((16.0, 9.0));
-        let scale = (avail.x / vw).min(avail.y / vh);
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(avail.x, vh * scale), Sense::click_and_drag());
+    /// The video, aspect-fit on black. Click to play or pause; in vertical
+    /// mode, drag to move the 9:16 crop.
+    fn preview(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, rect: Rect) {
+        let resp = ui.allocate_rect(rect, Sense::click_and_drag());
         let p = ui.painter_at(rect);
-        p.rect_filled(rect, CornerRadius::same(theme::R_CARD), Color32::BLACK);
+        p.rect_filled(rect, CornerRadius::same(theme::R_CARD), t.well);
+        let (vw, vh) = self.texture.as_ref().map(|t| (t.size()[0] as f32, t.size()[1] as f32)).unwrap_or((16.0, 9.0));
+        let scale = (rect.width() / vw).min(rect.height() / vh);
         let img = Rect::from_center_size(rect.center(), Vec2::new(vw * scale, vh * scale));
         if let Some(tex) = &self.texture {
             p.image(tex.id(), img, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
         }
         if self.vertical {
-            // The 9:16 part that a vertical export keeps; drag to move it.
             let spec = edit::EncodeSpec { codec: crate::config::Codec::H264, bitrate_kbps: 0, cbr: false, max_height: None, vertical: Some(self.crop_center) };
             let (sw, sh) = self.video_size;
             let ((cx, _, cw, _), _) = edit::plan_frame(sw, sh, &spec);
@@ -466,7 +582,7 @@ impl Editor {
             let on = !self.playing;
             self.set_playing(on);
         }
-        if !self.playing && self.drag.is_none() && resp.hovered() {
+        if !self.playing && self.drag.is_none() && resp.hovered() && !self.vertical {
             let c = rect.center();
             p.circle_filled(c, 32.0, Color32::from_black_alpha(140));
             if icons {
@@ -475,70 +591,71 @@ impl Editor {
                 draw_play(&p, c, 14.0, Color32::WHITE);
             }
         }
-
-        ui.add_space(12.0);
-        self.transport(ui, t, icons);
-        ui.add_space(4.0);
-        self.trim_bar(ui, t);
     }
 
+    /// Timecode on the left, playback controls in the middle, selection on the right.
     fn transport(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
-        // One full-width row: time on the left, controls centred, selection on the right.
         let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::hover());
+        let mono = FontId::monospace(13.0);
         ui.painter().text(
-            Pos2::new(r.left(), r.center().y),
+            Pos2::new(r.left() + 4.0, r.center().y),
             Align2::LEFT_CENTER,
             format!("{}  /  {}", theme::fmt_time(self.cursor), theme::fmt_time(self.duration)),
-            FontId::proportional(14.0),
+            mono.clone(),
             t.text,
         );
-        let total = 32.0 * 4.0 + 44.0 + 8.0 * 4.0;
+        let total = 32.0 * 6.0 + 40.0 + 4.0 * 7.0;
         let controls = Rect::from_center_size(r.center(), Vec2::new(total, 44.0));
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(controls).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        let ui2 = &mut child;
-        if theme::subtle(ui2, theme::label_with_icon(icons, icon::SKIP_BACK, if icons { "" } else { "|<" })).on_hover_text("Go to start (Home)").clicked() {
-            if self.playing {
-                self.set_playing(false);
+        let u = &mut child;
+        u.spacing_mut().item_spacing.x = 4.0;
+        let step = 1.0 / self.fps.max(1.0);
+        let go = |ed: &mut Self, target: f64| {
+            if ed.playing {
+                ed.set_playing(false);
             }
+            ed.seek(target);
+        };
+        if theme::subtle(u, theme::label_with_icon(icons, icon::SKIP_BACK, if icons { "" } else { "|<" })).on_hover_text("Go to start (Home)").clicked() {
             let i = self.in_point;
-            self.seek(i);
+            go(self, i);
         }
-        if theme::subtle(ui2, RichText::new("[").size(18.0)).on_hover_text("Set start at the playhead (I)").clicked() {
+        if theme::subtle(u, RichText::new("[").size(18.0)).on_hover_text("Set start here (I)").clicked() {
             self.in_point = self.cursor.min(self.out_point - 0.1).max(0.0);
         }
-        let (b, resp) = ui2.allocate_exact_size(Vec2::splat(44.0), Sense::click());
-        let fill = if resp.hovered() { t.accent_hover } else { t.accent };
-        ui2.painter().circle_filled(b.center(), 22.0, fill);
+        if theme::subtle(u, RichText::new("\u{2039}").size(20.0)).on_hover_text("Previous frame (\u{2190})").clicked() {
+            let c = self.cursor - step;
+            go(self, c);
+        }
+        let (b, resp) = u.allocate_exact_size(Vec2::splat(40.0), Sense::click());
+        let fill = if resp.hovered() { t.control_hover } else { t.control };
+        u.painter().circle(b.center(), 20.0, fill, Stroke::new(1.0, t.control_stroke));
         if icons {
             let g = if self.playing { icon::PAUSE } else { icon::PLAY };
-            ui2.painter().text(b.center(), Align2::CENTER_CENTER, g, FontId::new(18.0, FontFamily::Name(theme::ICONS.into())), t.on_accent);
-        } else if self.playing {
-            let c = b.center();
-            ui2.painter().rect_filled(Rect::from_center_size(c - Vec2::new(4.0, 0.0), Vec2::new(4.0, 14.0)), 1.0, t.on_accent);
-            ui2.painter().rect_filled(Rect::from_center_size(c + Vec2::new(4.0, 0.0), Vec2::new(4.0, 14.0)), 1.0, t.on_accent);
+            u.painter().text(b.center(), Align2::CENTER_CENTER, g, FontId::new(16.0, FontFamily::Name(theme::ICONS.into())), t.text);
         } else {
-            draw_play(ui2.painter(), b.center(), 8.0, t.on_accent);
+            draw_play(u.painter(), b.center(), 7.0, t.text);
         }
         if resp.on_hover_text("Play the selection (Space)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             let on = !self.playing;
             self.set_playing(on);
         }
-        if theme::subtle(ui2, RichText::new("]").size(18.0)).on_hover_text("Set end at the playhead (O)").clicked() {
+        if theme::subtle(u, RichText::new("\u{203a}").size(20.0)).on_hover_text("Next frame (\u{2192})").clicked() {
+            let c = self.cursor + step;
+            go(self, c);
+        }
+        if theme::subtle(u, RichText::new("]").size(18.0)).on_hover_text("Set end here (O)").clicked() {
             self.out_point = self.cursor.max(self.in_point + 0.1).min(self.duration);
         }
-        if theme::subtle(ui2, theme::label_with_icon(icons, icon::SKIP_FWD, if icons { "" } else { ">|" })).on_hover_text("Go to end (End)").clicked() {
-            if self.playing {
-                self.set_playing(false);
-            }
+        if theme::subtle(u, theme::label_with_icon(icons, icon::SKIP_FWD, if icons { "" } else { ">|" })).on_hover_text("Go to end (End)").clicked() {
             let o = self.out_point;
-            self.seek(o);
+            go(self, o);
         }
-        // Selection length on the right.
         ui.painter().text(
-            Pos2::new(r.right(), r.center().y),
+            Pos2::new(r.right() - 4.0, r.center().y),
             Align2::RIGHT_CENTER,
             format!("Selection {}", theme::fmt_time(self.out_point - self.in_point)),
-            FontId::proportional(12.0),
+            mono,
             t.text2,
         );
     }
@@ -547,7 +664,7 @@ impl Editor {
     /// that frame in the preview.
     fn trim_bar(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         let dur = self.duration.max(0.001);
-        let (outer, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), STRIP_H + 56.0), Sense::click_and_drag());
+        let (outer, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), STRIP_H + WAVE_H + 60.0), Sense::click_and_drag());
         let strip = Rect::from_min_size(
             Pos2::new(outer.left() + HANDLE_W, outer.top() + 28.0),
             Vec2::new(outer.width() - HANDLE_W * 2.0, STRIP_H),
@@ -603,19 +720,41 @@ impl Editor {
             }
         }
 
+
         // Playhead.
         let head = if t.dark { Color32::WHITE } else { Color32::from_gray(24) };
         let xp = x_of(self.cursor);
         p.line_segment([Pos2::new(xp, strip.top() - 8.0), Pos2::new(xp, strip.bottom() + 4.0)], Stroke::new(2.0, head));
         p.circle_filled(Pos2::new(xp, strip.top() - 9.0), 5.0, head);
 
-        // Ruler under the strip.
+        // Waveform, dimmed outside the selection like the filmstrip.
+        let wave = Rect::from_min_size(Pos2::new(strip.left(), strip.bottom() + 6.0), Vec2::new(strip.width(), WAVE_H));
+        if !self.waveform.is_empty() {
+            let n = self.waveform.len();
+            let cols = (wave.width() / 2.0).max(1.0) as usize;
+            for k in 0..cols {
+                let a = k * n / cols;
+                let b = ((k + 1) * n / cols).max(a + 1).min(n);
+                let peak = self.waveform[a..b].iter().cloned().fold(0.0f32, f32::max);
+                let h = (peak * (WAVE_H - 2.0)).max(1.0);
+                let x = wave.left() + k as f32 * 2.0 + 1.0;
+                let inside = x >= xi && x <= xo;
+                let c = if inside { t.text2 } else { t.text3.gamma_multiply(0.5) };
+                p.line_segment([Pos2::new(x, wave.center().y - h / 2.0), Pos2::new(x, wave.center().y + h / 2.0)], Stroke::new(1.0, c));
+            }
+        } else if self.has_game || self.has_mic {
+            p.text(wave.left_center(), Align2::LEFT_CENTER, "Loading audio\u{2026}", FontId::proportional(12.0), t.text3);
+        }
+        p.line_segment([Pos2::new(xp, wave.top()), Pos2::new(xp, wave.bottom())], Stroke::new(2.0, head));
+
+        // Ruler under the waveform.
+        let ruler = wave.bottom() + 4.0;
         let step = [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0].into_iter().find(|s| dur / s <= 10.0).unwrap_or(600.0);
         let mut s = 0.0;
         while s <= dur + 1e-6 {
             let x = x_of(s);
-            p.line_segment([Pos2::new(x, strip.bottom() + 6.0), Pos2::new(x, strip.bottom() + 10.0)], Stroke::new(1.0, t.text3));
-            p.text(Pos2::new(x, strip.bottom() + 12.0), Align2::CENTER_TOP, theme::fmt_short(s), FontId::proportional(12.0), t.text3);
+            p.line_segment([Pos2::new(x, ruler), Pos2::new(x, ruler + 4.0)], Stroke::new(1.0, t.text3));
+            p.text(Pos2::new(x, ruler + 6.0), Align2::CENTER_TOP, theme::fmt_short(s), FontId::proportional(12.0), t.text3);
             s += step;
         }
 
@@ -673,250 +812,246 @@ impl Editor {
         }
     }
 
-    fn side_panel(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared) -> Option<Action> {
-        let mut action = None;
+    /// The inspector: Trim, Audio, Export and Details, one level deep.
+    fn inspector(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared) -> Option<Action> {
         let ctx = ui.ctx().clone();
-        let full = |ui: &egui::Ui| Vec2::new(ui.available_width(), theme::CONTROL_H);
-
-        theme::card(t).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(theme::body_strong("Audio").color(t.text));
-            ui.add_space(4.0);
-            let mut changed = false;
-            let mut row = |ui: &mut egui::Ui, c: char, label: &str, v: &mut u32| {
-                ui.horizontal(|ui| {
-                    if icons {
-                        ui.label(theme::glyph(c, 16.0).color(t.text2));
-                    }
-                    ui.add_sized(Vec2::new(40.0, 20.0), egui::Label::new(RichText::new(label).color(t.text)));
-                    ui.spacing_mut().slider_width = (ui.available_width() - 48.0).max(80.0);
-                    changed |= ui.add(egui::Slider::new(v, 0..=200).show_value(false)).changed();
-                    ui.label(theme::caption(format!("{v}%")).color(t.text2));
-                });
-            };
-            if self.has_game {
-                row(ui, icon::GAME, "Game", &mut self.game_gain);
-            }
-            if self.has_mic {
-                row(ui, icon::MIC, "Mic", &mut self.mic_gain);
-            }
-            if !self.has_game && !self.has_mic {
-                ui.label(theme::caption("This clip has no audio.").color(t.text2));
-            }
-            if changed && let Some(a) = &self.audio {
-                a.set_gains(self.game_gain, self.mic_gain);
-            }
-            if self.has_mic {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new("Keep separate tracks").color(t.text));
-                        ui.label(theme::caption("Game and mic stay editable").color(t.text2));
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        theme::toggle(ui, t, &mut self.keep_separate);
-                    });
-                });
-            }
-        });
-        ui.add_space(12.0);
-
         let busy = !shared.jobs.is_empty();
-        theme::card(t).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(theme::body_strong("Save").color(t.text));
-            let how = if self.exact {
-                "The video is encoded again, so the clip starts on the exact frame. This takes a few seconds."
-            } else {
-                "The video is copied, not encoded again, so the start moves to the keyframe just before it (at most 0.5 s)."
-            };
-            ui.label(
-                theme::caption(format!("Saves the {} selection as a new clip with this audio mix. {how}", theme::fmt_time(self.out_point - self.in_point)))
-                    .color(t.text2),
-            );
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Exact cut").color(t.text));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    theme::toggle(ui, t, &mut self.exact);
+        egui::Frame::new()
+            .fill(t.card)
+            .stroke(Stroke::new(1.0, t.card_stroke))
+            .corner_radius(CornerRadius::same(theme::R_CARD))
+            .inner_margin(egui::Margin::same(16))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.set_min_height(ui.available_height());
+                egui::ScrollArea::vertical().id_salt("inspector").auto_shrink([false, false]).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 8.0;
+                    let full = Vec2::new(ui.available_width(), theme::CONTROL_H);
+
+                    section(ui, t, "Trim", true, |ui| {
+                        egui::Grid::new("trim").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+                            ui.label(RichText::new("Start").color(t.text2));
+                            ui.label(RichText::new(theme::fmt_time(self.in_point)).family(FontFamily::Monospace).color(t.text));
+                            ui.end_row();
+                            ui.label(RichText::new("End").color(t.text2));
+                            ui.label(RichText::new(theme::fmt_time(self.out_point)).family(FontFamily::Monospace).color(t.text));
+                            ui.end_row();
+                            ui.label(RichText::new("Length").color(t.text2));
+                            ui.label(RichText::new(theme::fmt_time(self.out_point - self.in_point)).family(FontFamily::Monospace).color(t.text));
+                            ui.end_row();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new("Exact cut").color(t.text));
+                                ui.label(theme::caption(if self.exact { "Encodes again; takes a few seconds" } else { "Fast; starts on the nearest keyframe" }).color(t.text3));
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                theme::toggle(ui, t, &mut self.exact);
+                            });
+                        });
+                        if ui.add_enabled(!busy, egui::Button::new(theme::label_with_icon(icons, icon::CUT, "Save trimmed copy")).min_size(full)).clicked() {
+                            let seg = vec![Segment { path: self.path.clone(), start: self.in_point, end: self.out_point }];
+                            let out = edit::edited_name(&self.path, "edit");
+                            let mix = Mix { game: self.game_gain, mic: self.mic_gain, keep_separate: self.keep_separate, bitrate_kbps: shared.cfg.audio.bitrate_kbps, music: None };
+                            let exact = self.exact;
+                            let (src, secs) = (self.path.clone(), self.out_point - self.in_point);
+                            shared.spawn_job(&ctx, JobKind::Export, "Saving clip".into(), move |p| {
+                                let video = if exact {
+                                    match edit::encode_spec(&src, secs, mix.bitrate_kbps * 3, &edit::ExportChoice::default()) {
+                                        Ok(s) => edit::VideoMode::Encode(s),
+                                        Err(e) => return JobDone::Failed(format!("Save failed: {e}")),
+                                    }
+                                } else {
+                                    edit::VideoMode::Copy
+                                };
+                                match edit::export(&seg, &out, &mix, &video, p) {
+                                    Ok(path) => JobDone::Exported(path),
+                                    Err(e) => JobDone::Failed(format!("Save failed: {e}")),
+                                }
+                            });
+                        }
+                    });
+
+                    section(ui, t, "Audio", true, |ui| {
+                        let mut changed = false;
+                        let mut row = |ui: &mut egui::Ui, c: char, label: &str, v: &mut u32| {
+                            ui.horizontal(|ui| {
+                                if icons {
+                                    ui.label(theme::glyph(c, 16.0).color(t.text2));
+                                }
+                                ui.add_sized(Vec2::new(36.0, 20.0), egui::Label::new(RichText::new(label).color(t.text)));
+                                ui.spacing_mut().slider_width = (ui.available_width() - 48.0).max(60.0);
+                                changed |= ui.add(egui::Slider::new(v, 0..=200).show_value(false)).changed();
+                                ui.label(theme::caption(format!("{v}%")).color(t.text2));
+                            });
+                        };
+                        if self.has_game {
+                            row(ui, icon::GAME, "Game", &mut self.game_gain);
+                        }
+                        if self.has_mic {
+                            row(ui, icon::MIC, "Mic", &mut self.mic_gain);
+                        }
+                        if !self.has_game && !self.has_mic {
+                            ui.label(theme::caption("This clip has no audio.").color(t.text2));
+                        }
+                        if changed && let Some(a) = &self.audio {
+                            a.set_gains(self.game_gain, self.mic_gain);
+                        }
+                        if self.has_mic {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Keep separate tracks").color(t.text));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    theme::toggle(ui, t, &mut self.keep_separate);
+                                });
+                            });
+                        }
+                    });
+
+                    section(ui, t, "Export", true, |ui| {
+                        self.export_section(ui, t, icons, shared, busy);
+                    });
+
+                    section(ui, t, "Details", false, |ui| {
+                        egui::Grid::new("details").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+                            let mut row = |k: &str, v: String| {
+                                ui.label(theme::caption(k).color(t.text2));
+                                ui.label(theme::caption(v).color(t.text));
+                                ui.end_row();
+                            };
+                            row("Video", format!("{} x {}  \u{00b7}  {:.0} fps", self.video_size.0, self.video_size.1, self.fps));
+                            row("Codec", format!("{}  \u{00b7}  {}", self.codec, theme::fmt_mbps(self.video_kbps)));
+                            let tracks = match (self.has_game, self.has_mic) {
+                                (true, true) => "Game and mic",
+                                (true, false) => "Game",
+                                (false, true) => "Mic",
+                                _ => "None",
+                            };
+                            row("Audio", tracks.to_string());
+                            row("Size", format!("{:.1} MB", self.size_bytes as f64 / 1e6));
+                        });
+                        if ui.add(egui::Button::new(theme::label_with_icon(icons, icon::FOLDER, "Show in folder")).frame_when_inactive(false)).clicked() {
+                            crate::sys::shell::reveal(&self.path);
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.label(theme::caption("Space play  \u{00b7}  I / O start and end  \u{00b7}  \u{2190} \u{2192} frame  \u{00b7}  Shift 1 s").color(t.text3));
                 });
             });
-            ui.add_space(8.0);
-            let text = theme::label_with_icon(icons, icon::CUT, "Save trimmed clip").color(t.on_accent);
-            let b = egui::Button::new(text).fill(t.accent).stroke(Stroke::NONE).min_size(full(ui));
-            if ui.add_enabled(!busy, b).clicked() {
-                let seg = vec![Segment { path: self.path.clone(), start: self.in_point, end: self.out_point }];
-                let out = edit::edited_name(&self.path, "edit");
-                let mix = Mix { game: self.game_gain, mic: self.mic_gain, keep_separate: self.keep_separate, bitrate_kbps: shared.cfg.audio.bitrate_kbps, music: None };
-                let exact = self.exact;
-                let (src, secs) = (self.path.clone(), self.out_point - self.in_point);
-                shared.spawn_job(&ctx, JobKind::Export, "Saving clip".into(), move |p| {
-                    let video = if exact {
-                        match edit::encode_spec(&src, secs, mix.bitrate_kbps * 3, &edit::ExportChoice::default()) {
-                            Ok(s) => edit::VideoMode::Encode(s),
-                            Err(e) => return JobDone::Failed(format!("Save failed: {e}")),
-                        }
-                    } else {
-                        edit::VideoMode::Copy
-                    };
-                    match edit::export(&seg, &out, &mix, &video, p) {
-                        Ok(path) => JobDone::Exported(path),
-                        Err(e) => JobDone::Failed(format!("Save failed: {e}")),
-                    }
-                });
+        None
+    }
+
+    /// Export for Discord, phones or a custom size: the selection is encoded
+    /// again with H.264, which every app and site plays.
+    fn export_section(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared, busy: bool) {
+        let ctx = ui.ctx().clone();
+        let w = ui.available_width();
+        egui::ComboBox::from_id_salt("preset").width(w).selected_text(self.preset.label()).show_ui(ui, |ui| {
+            for p in Preset::ALL {
+                ui.selectable_value(&mut self.preset, p, p.label());
             }
         });
-        ui.add_space(12.0);
-
-        self.export_card(ui, t, icons, shared, busy);
-        ui.add_space(12.0);
-
-        theme::card(t).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(theme::body_strong("Share").color(t.text));
-            ui.add_space(4.0);
-            if ui
-                .add(egui::Button::new(theme::label_with_icon(icons, icon::COPY, "Copy file")).min_size(full(ui)))
-                .on_hover_text("Then paste it into Discord, Slack or a folder")
-                .clicked()
-            {
-                if crate::sys::shell::copy_file(&self.path) {
-                    shared.toast("File copied. Paste it with Ctrl+V.", false);
-                } else {
-                    shared.toast("Could not use the clipboard.", true);
+        if self.preset == Preset::Custom {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Largest size").color(t.text));
+                ui.add(egui::DragValue::new(&mut self.custom_mb).range(1.0..=4000.0).speed(1.0).suffix(" MB"));
+            });
+        }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let half = (ui.available_width() - 4.0) / 2.0;
+            for (v, label) in [(false, "Landscape"), (true, "Vertical 9:16")] {
+                let on = self.vertical == v;
+                let b = egui::Button::new(RichText::new(label).color(t.text))
+                    .fill(if on { t.control_hover } else { Color32::TRANSPARENT })
+                    .stroke(Stroke::new(1.0, if on { t.accent } else { t.control_stroke }))
+                    .min_size(Vec2::new(half, theme::CONTROL_H));
+                if ui.add(b).clicked() {
+                    self.vertical = v;
                 }
             }
-            let ready = crate::share::ready(&shared.cfg.share);
-            let label = format!("Upload to {}", shared.cfg.share.target.label());
-            let up = ui.add_enabled(!busy, egui::Button::new(theme::label_with_icon(icons, icon::UPLOAD, &label)).min_size(full(ui)));
-            let up = match ready {
-                Ok(()) => up.on_hover_text(shared.cfg.share.target.describe()),
-                Err(why) => up.on_hover_text(why),
+        });
+        if self.vertical {
+            ui.label(theme::caption("Drag on the video to choose what stays in the picture.").color(t.text3));
+        }
+        let secs = (self.out_point - self.in_point).max(0.1);
+        let size_mb = self.preset.size_mb(self.custom_mb);
+        let small = size_mb.is_some();
+        let audio_kbps = if small { 128 } else { shared.cfg.audio.bitrate_kbps * if self.keep_separate && self.has_mic { 3 } else { 1 } };
+        let spec = match size_mb {
+            Some(mb) => {
+                let (k, h) = edit::size_target(mb, secs, audio_kbps);
+                edit::EncodeSpec { codec: crate::config::Codec::H264, bitrate_kbps: k, cbr: true, max_height: h, vertical: self.vertical.then_some(self.crop_center) }
+            }
+            None => edit::EncodeSpec {
+                codec: crate::config::Codec::H264,
+                bitrate_kbps: (self.video_kbps.max(2000) * 7 / 5).min(150_000),
+                cbr: false,
+                max_height: None,
+                vertical: self.vertical.then_some(self.crop_center),
+            },
+        };
+        let (_, (ow, oh)) = edit::plan_frame(self.video_size.0, self.video_size.1, &spec);
+        let est_mb = (f64::from(spec.bitrate_kbps) + f64::from(audio_kbps)) * secs / 8000.0;
+        ui.label(theme::caption(format!("About {est_mb:.1} MB  \u{00b7}  {ow} x {oh}  \u{00b7}  H.264")).color(t.text2));
+        if spec.bitrate_kbps < 800 {
+            ui.label(theme::caption("Long for this size, so the picture will be soft. Trim it shorter for a sharper clip.").color(t.caution));
+        }
+        let b = egui::Button::new(theme::label_with_icon(icons, icon::SAVE, "Export")).min_size(Vec2::new(ui.available_width(), theme::CONTROL_H));
+        if ui.add_enabled(!busy, b).clicked() {
+            let seg = vec![Segment { path: self.path.clone(), start: self.in_point, end: self.out_point }];
+            let suffix = match (small, self.vertical) {
+                (_, true) => "vertical",
+                (true, false) => "small",
+                (false, false) => "export",
             };
-            if up.clicked() {
-                match ready {
-                    Ok(()) => shared.start_upload(&ctx, self.path.clone()),
-                    Err(why) => shared.toast(why, true),
-                }
-            }
-            if let Some(url) = shared.uploads.get(self.path.to_string_lossy().as_ref()).cloned() {
-                ui.horizontal(|ui| {
-                    ui.hyperlink_to(theme::caption(url.trim_start_matches("https://")), &url);
-                    if theme::subtle(ui, theme::label_with_icon(icons, icon::COPY, if icons { "" } else { "Copy" })).on_hover_text("Copy link").clicked() {
-                        crate::sys::shell::copy_text(&url);
-                        shared.toast("Link copied.", false);
-                    }
-                });
-            }
-            if ui.add(egui::Button::new(theme::label_with_icon(icons, icon::FOLDER, "Show in folder")).min_size(full(ui))).clicked() {
-                crate::sys::shell::reveal(&self.path);
-            }
-            ui.add_space(4.0);
-            let del = egui::Button::new(theme::label_with_icon(icons, icon::DELETE, "Delete clip").color(t.critical))
-                .frame_when_inactive(false)
-                .min_size(full(ui));
-            if ui.add(del).clicked() {
-                action = Some(Action::Delete(self.path.clone()));
-            }
-        });
-        ui.add_space(12.0);
-        ui.label(theme::caption("Space play  ·  I / O set start and end  ·  ← → step  ·  Shift for 1 s  ·  Home / End").color(t.text3));
-        action
+            let out = edit::edited_name(&self.path, suffix);
+            let mix = Mix {
+                game: self.game_gain,
+                mic: self.mic_gain,
+                // Size targets keep only the mixed track; every bit goes to the picture.
+                keep_separate: self.keep_separate && !small,
+                bitrate_kbps: if small { 128 } else { shared.cfg.audio.bitrate_kbps },
+                music: None,
+            };
+            let label = format!("Exporting {}", theme::fmt_short(secs));
+            shared.spawn_job(&ctx, JobKind::Export, label, move |p| match edit::export(&seg, &out, &mix, &edit::VideoMode::Encode(spec), p) {
+                Ok(path) => JobDone::Exported(path),
+                Err(e) => JobDone::Failed(format!("Export failed: {e}")),
+            });
+        }
     }
 }
 
-impl Editor {
-    /// Export for Discord, phones or a custom size: the selection is encoded
-    /// again with H.264, which every app and site plays.
-    fn export_card(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared, busy: bool) {
-        let ctx = ui.ctx().clone();
-        theme::card(t).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(theme::body_strong("Export").color(t.text));
-            ui.label(theme::caption("A copy that fits a size limit or a phone screen. Plays everywhere (H.264).").color(t.text2));
-            ui.add_space(8.0);
-            let w = ui.available_width();
-            egui::ComboBox::from_id_salt("preset").width(w).selected_text(self.preset.label()).show_ui(ui, |ui| {
-                for p in Preset::ALL {
-                    ui.selectable_value(&mut self.preset, p, p.label());
-                }
-            });
-            if self.preset == Preset::Custom {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Largest size").color(t.text));
-                    ui.add(egui::DragValue::new(&mut self.custom_mb).range(1.0..=4000.0).speed(1.0).suffix(" MB"));
-                });
-            }
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                let half = (ui.available_width() - 4.0) / 2.0;
-                for (v, label) in [(false, "Landscape"), (true, "Vertical 9:16")] {
-                    let on = self.vertical == v;
-                    let b = egui::Button::new(RichText::new(label).color(if on { t.on_accent } else { t.text }))
-                        .fill(if on { t.accent } else { t.control })
-                        .min_size(Vec2::new(half, theme::CONTROL_H));
-                    if ui.add(b).clicked() {
-                        self.vertical = v;
-                    }
-                }
-            });
-            if self.vertical {
-                ui.label(theme::caption("Drag the frame on the video to choose what stays in the picture.").color(t.text2));
-            }
+/// One collapsible inspector section (one level only).
+fn section(ui: &mut egui::Ui, t: &Tokens, title: &str, open: bool, body: impl FnOnce(&mut egui::Ui)) {
+    egui::CollapsingHeader::new(theme::body_strong(title).color(t.text)).id_salt(title).default_open(open).show_unindented(ui, |ui| {
+        ui.add_space(2.0);
+        body(ui);
+        ui.add_space(6.0);
+    });
+    ui.add(egui::Separator::default().spacing(4.0));
+}
 
-            // Estimate what comes out.
-            let secs = (self.out_point - self.in_point).max(0.1);
-            let size_mb = self.preset.size_mb(self.custom_mb);
-            let small = size_mb.is_some();
-            let audio_kbps = if small { 128 } else { shared.cfg.audio.bitrate_kbps * if self.keep_separate && self.has_mic { 3 } else { 1 } };
-            let spec = match size_mb {
-                Some(mb) => {
-                    let (k, h) = edit::size_target(mb, secs, audio_kbps);
-                    edit::EncodeSpec { codec: crate::config::Codec::H264, bitrate_kbps: k, cbr: true, max_height: h, vertical: self.vertical.then_some(self.crop_center) }
-                }
-                None => edit::EncodeSpec {
-                    codec: crate::config::Codec::H264,
-                    bitrate_kbps: (self.video_kbps.max(2000) * 7 / 5).min(150_000),
-                    cbr: false,
-                    max_height: None,
-                    vertical: self.vertical.then_some(self.crop_center),
-                },
-            };
-            let (_, (ow, oh)) = edit::plan_frame(self.video_size.0, self.video_size.1, &spec);
-            let est_mb = (f64::from(spec.bitrate_kbps) + f64::from(audio_kbps)) * secs / 8000.0;
-            ui.add_space(6.0);
-            ui.label(theme::caption(format!("About {est_mb:.1} MB  ·  {ow} x {oh}  ·  {}", theme::fmt_short(secs))).color(t.text2));
-            if spec.bitrate_kbps < 800 {
-                ui.label(theme::caption("The selection is long for this size, so the picture will be soft. Trim it shorter for a sharper clip.").color(t.caution));
-            }
-            ui.add_space(8.0);
-            let text = theme::label_with_icon(icons, icon::SHARE, "Export");
-            let b = egui::Button::new(text).min_size(Vec2::new(ui.available_width(), theme::CONTROL_H));
-            if ui.add_enabled(!busy, b).clicked() {
-                let seg = vec![Segment { path: self.path.clone(), start: self.in_point, end: self.out_point }];
-                let suffix = match (small, self.vertical) {
-                    (_, true) => "vertical",
-                    (true, false) => "small",
-                    (false, false) => "export",
-                };
-                let out = edit::edited_name(&self.path, suffix);
-                let mix = Mix {
-                    game: self.game_gain,
-                    mic: self.mic_gain,
-                    // Size targets keep only the mixed track; every bit goes to the picture.
-                    keep_separate: self.keep_separate && !small,
-                    bitrate_kbps: if small { 128 } else { shared.cfg.audio.bitrate_kbps },
-                    music: None,
-                };
-                let label = format!("Exporting {}", theme::fmt_short(secs));
-                shared.spawn_job(&ctx, JobKind::Export, label, move |p| match edit::export(&seg, &out, &mix, &edit::VideoMode::Encode(spec), p) {
-                    Ok(path) => JobDone::Exported(path),
-                    Err(e) => JobDone::Failed(format!("Export failed: {e}")),
-                });
-            }
-        });
+/// Peak level per slice of the clip (game and mic together), 0..1.
+fn waveform(tracks: &AudioTracks) -> Vec<f32> {
+    let len = tracks.game.as_ref().map_or(0, Vec::len).max(tracks.mic.as_ref().map_or(0, Vec::len));
+    if len == 0 {
+        return Vec::new();
     }
+    let per = len.div_ceil(WAVE_BUCKETS).max(2);
+    let mut out: Vec<f32> = (0..len.div_ceil(per))
+        .map(|b| {
+            let range = b * per..((b + 1) * per).min(len);
+            let peak = |v: &Option<Vec<i16>>| v.as_ref().map_or(0, |v| v.get(range.clone()).map_or(0, |s| s.iter().map(|x| x.unsigned_abs()).max().unwrap_or(0)));
+            f32::from(peak(&tracks.game).max(peak(&tracks.mic))) / 32768.0
+        })
+        .collect();
+    // Scale so the loudest part fills the strip; quiet clips stay readable.
+    let max = out.iter().cloned().fold(0.0f32, f32::max).max(0.02);
+    for v in &mut out {
+        *v = (*v / max).sqrt();
+    }
+    out
 }
 
 fn draw_play(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {

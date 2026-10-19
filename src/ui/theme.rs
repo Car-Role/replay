@@ -30,6 +30,7 @@ pub struct Tokens {
     pub card: Color32,
     pub card_alt: Color32,
     pub card_stroke: Color32,
+    pub card_hover: Color32,
     /// ControlFillColorDefault / Secondary / Tertiary.
     pub control: Color32,
     pub control_hover: Color32,
@@ -40,6 +41,10 @@ pub struct Tokens {
     pub subtle_pressed: Color32,
     pub strong: Color32,
     pub divider: Color32,
+    /// Menus, dialogs and toasts.
+    pub flyout: Color32,
+    /// Behind video: pure black.
+    pub well: Color32,
     /// TextFillColorPrimary / Secondary / Tertiary / Disabled.
     pub text: Color32,
     pub text2: Color32,
@@ -48,6 +53,8 @@ pub struct Tokens {
     pub accent: Color32,
     pub accent_hover: Color32,
     pub on_accent: Color32,
+    /// Recording, and nothing else.
+    pub recording: Color32,
     pub success: Color32,
     pub caution: Color32,
     pub critical: Color32,
@@ -68,31 +75,37 @@ const fn argb(v: u32) -> Color32 {
     )
 }
 
-/// Values from WinUI `Common_themeresources_any.xaml` ("Default" = dark).
+/// Dark theme: neutral, untinted surfaces so footage colors read true
+/// (see docs/design.md). Values follow WinUI's dark theme resources.
 pub const DARK: Tokens = Tokens {
     dark: true,
-    base: argb(0xFF20_2020),
-    layer: argb(0x4C3A_3A3A),
-    layer_stroke: argb(0x1900_0000),
-    card: argb(0x0DFF_FFFF),
-    card_alt: argb(0x08FF_FFFF),
-    card_stroke: argb(0x1900_0000),
+    base: argb(0xFF1C_1C1C),
+    layer: argb(0xFF20_2020),
+    layer_stroke: argb(0x14FF_FFFF),
+    card: argb(0xFF2B_2B2B),
+    card_alt: argb(0xFF26_2626),
+    card_stroke: argb(0x14FF_FFFF),
+    card_hover: argb(0xFF32_3232),
     control: argb(0x0FFF_FFFF),
-    control_hover: argb(0x15FF_FFFF),
-    control_pressed: argb(0x08FF_FFFF),
-    control_stroke: argb(0x12FF_FFFF),
+    control_hover: argb(0x17FF_FFFF),
+    control_pressed: argb(0x0AFF_FFFF),
+    control_stroke: argb(0x17FF_FFFF),
     subtle_hover: argb(0x0FFF_FFFF),
     subtle_pressed: argb(0x0AFF_FFFF),
     strong: argb(0x8BFF_FFFF),
-    divider: argb(0x15FF_FFFF),
+    divider: argb(0x14FF_FFFF),
+    flyout: argb(0xFF2C_2C2C),
+    well: argb(0xFF00_0000),
     text: argb(0xFFFF_FFFF),
-    text2: argb(0xC5FF_FFFF),
-    text3: argb(0x87FF_FFFF),
-    text_disabled: argb(0x5DFF_FFFF),
-    // Brand accent (the icon's sunset coral), light enough for dark text on it.
-    accent: argb(0xFFFF_6B81),
-    accent_hover: argb(0xFFFF_8496),
-    on_accent: argb(0xFF00_0000),
+    text2: argb(0xFFC8_C8C8),
+    text3: argb(0xFF9E_9E9E),
+    text_disabled: argb(0xFF5C_5C5C),
+    // Brand accent, shifted toward magenta so it never reads as the red
+    // recording dot. 5.5:1 on the page layer.
+    accent: argb(0xFFF2_649A),
+    accent_hover: argb(0xFFF5_7DAA),
+    on_accent: argb(0xFF1A_0B12),
+    recording: argb(0xFFFF_4D4F),
     success: argb(0xFF6C_CB5F),
     caution: argb(0xFFFC_E100),
     critical: argb(0xFFFF_99A4),
@@ -102,11 +115,12 @@ pub const DARK: Tokens = Tokens {
 pub const LIGHT: Tokens = Tokens {
     dark: false,
     base: argb(0xFFF3_F3F3),
-    layer: argb(0x80FF_FFFF),
+    layer: argb(0xFFF9_F9F9),
     layer_stroke: argb(0x0F00_0000),
-    card: argb(0xB3FF_FFFF),
-    card_alt: argb(0x80F6_F6F6),
+    card: argb(0xFFFF_FFFF),
+    card_alt: argb(0xFFF6_F6F6),
     card_stroke: argb(0x0F00_0000),
+    card_hover: argb(0xFFF0_F0F0),
     control: argb(0xB3FF_FFFF),
     control_hover: argb(0x80F9_F9F9),
     control_pressed: argb(0x4DF9_F9F9),
@@ -115,13 +129,16 @@ pub const LIGHT: Tokens = Tokens {
     subtle_pressed: argb(0x0600_0000),
     strong: argb(0x7200_0000),
     divider: argb(0x0F00_0000),
+    flyout: argb(0xFFF9_F9F9),
+    well: argb(0xFF00_0000),
     text: argb(0xE400_0000),
     text2: argb(0x9E00_0000),
     text3: argb(0x7200_0000),
     text_disabled: argb(0x5C00_0000),
-    accent: argb(0xFFC8_2A4A),
-    accent_hover: argb(0xFFD8_3D5C),
+    accent: argb(0xFFC2_2E6A),
+    accent_hover: argb(0xFFD0_437B),
     on_accent: argb(0xFFFF_FFFF),
+    recording: argb(0xFFD1_3438),
     success: argb(0xFF0F_7B0F),
     caution: argb(0xFF9D_5D00),
     critical: argb(0xFFC4_2B1C),
@@ -178,6 +195,14 @@ pub mod icon {
     pub const RECORD: char = '\u{E7C8}';
     pub const CANCEL: char = '\u{E711}';
     pub const STAR: char = '\u{E734}';
+    pub const STOP: char = '\u{E71A}';
+    pub const MORE: char = '\u{E712}';
+    pub const SORT: char = '\u{E8CB}';
+    pub const TAG: char = '\u{E8EC}';
+    pub const CHEVRON_RIGHT: char = '\u{E76C}';
+    pub const CHEVRON_DOWN: char = '\u{E70D}';
+    pub const EDIT: char = '\u{E70F}';
+    pub const LOOP: char = '\u{E8EE}';
     pub const STAR_FILLED: char = '\u{E735}';
 }
 
@@ -241,7 +266,7 @@ pub fn install_fonts(ctx: &egui::Context) -> bool {
 fn visuals(t: &Tokens) -> egui::Visuals {
     let mut v = if t.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
     v.panel_fill = t.base;
-    v.window_fill = if t.dark { argb(0xFF2C_2C2C) } else { argb(0xFFF9_F9F9) };
+    v.window_fill = t.flyout;
     v.window_stroke = Stroke::new(1.0, if t.dark { argb(0x33FF_FFFF) } else { argb(0x1F00_0000) });
     v.window_corner_radius = CornerRadius::same(R_CARD);
     v.menu_corner_radius = CornerRadius::same(R_CARD);
@@ -469,7 +494,8 @@ pub fn setting(
 }
 
 /// Navigation item for the left rail (selected item has an accent pill).
-pub fn nav_item(ui: &mut Ui, t: &Tokens, icons: bool, c: char, label: &str, selected: bool) -> Response {
+/// In the compact rail only the icon shows, with the label as a tooltip.
+pub fn nav_item(ui: &mut Ui, t: &Tokens, icons: bool, c: char, label: &str, selected: bool, compact: bool) -> Response {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 36.0), Sense::click());
     let p = ui.painter();
@@ -487,13 +513,34 @@ pub fn nav_item(ui: &mut Ui, t: &Tokens, icons: bool, c: char, label: &str, sele
         let pill = egui::Rect::from_center_size(egui::pos2(rect.left() + 1.5, rect.center().y), Vec2::new(3.0, 16.0));
         p.rect_filled(pill, 1.5, t.accent);
     }
+    let icon_font = FontId::new(16.0, FontFamily::Name(ICONS.into()));
+    if compact {
+        let g = if icons { c.to_string() } else { label.chars().next().unwrap_or('?').to_string() };
+        p.text(rect.center(), egui::Align2::CENTER_CENTER, g, if icons { icon_font } else { FontId::proportional(14.0) }, t.text);
+        return resp.on_hover_text(label).on_hover_cursor(egui::CursorIcon::PointingHand);
+    }
     let mut x = rect.left() + 14.0;
     if icons {
-        p.text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, c, FontId::new(16.0, FontFamily::Name(ICONS.into())), t.text);
+        p.text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, c, icon_font, t.text);
         x += 30.0;
     }
     p.text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, label, FontId::new(14.0, FontFamily::Proportional), t.text);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A standard button of width `w`.
+pub fn button_w(ui: &mut Ui, text: impl Into<WidgetText>, w: f32) -> Response {
+    ui.add(egui::Button::new(text).min_size(Vec2::new(w, CONTROL_H)))
+}
+
+/// A filter chip: rounded, accent-filled when on.
+pub fn chip(ui: &mut Ui, t: &Tokens, text: impl Into<String>, on: bool) -> Response {
+    let b = egui::Button::new(RichText::new(text).size(13.0).color(if on { t.on_accent } else { t.text }))
+        .fill(if on { t.accent } else { t.control })
+        .stroke(if on { Stroke::NONE } else { Stroke::new(1.0, t.control_stroke) })
+        .corner_radius(CornerRadius::same(14))
+        .min_size(Vec2::new(0.0, 28.0));
+    ui.add(b)
 }
 
 /// Section header inside a page (Body strong, Windows Settings style).
@@ -519,6 +566,11 @@ pub fn fmt_mbps(kbps: u32) -> String {
 /// A memory size for people: "860 MB", "1.4 GB".
 pub fn fmt_bytes(b: u64) -> String {
     if b >= 1_000_000_000 { format!("{:.1} GB", b as f64 / 1e9) } else { format!("{} MB", (b + 500_000) / 1_000_000) }
+}
+
+/// A running timer: "4:05", "1:02:03".
+pub fn fmt_clock(secs: u64) -> String {
+    if secs >= 3600 { format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60) } else { format!("{}:{:02}", secs / 60, secs % 60) }
 }
 
 pub fn fmt_short(s: f64) -> String {

@@ -1,19 +1,15 @@
-//! The Games page: every game Replay has found, whether it is recording
-//! right now, and a switch to turn recording on or off for each one.
+//! The Games page: a list of every game Replay has found (icon, clips,
+//! quality, record switch). A row opens that game's page with its own
+//! quality settings, memory use and clips.
 
-use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke, Vec2};
+use std::path::Path;
 
-use super::LibraryApp;
+use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke, StrokeKind, Vec2};
+
 use super::theme::{self, Tokens, icon};
+use super::{LibraryApp, Page};
 use crate::config::{GameSettings, Resolution};
 use crate::games::{self, GameDb, GameRecord};
-
-enum RowAction {
-    Toggle { exe: String, name: String, on: bool, by_user: bool },
-    Forget { exe: String, name: String },
-    Expand(String),
-    Set { exe: String, name: String, settings: GameSettings },
-}
 
 const FPS_CHOICES: [u32; 5] = [30, 60, 120, 144, 240];
 const KBPS_CHOICES: [u32; 14] = [1_000, 2_000, 3_000, 4_000, 6_000, 8_000, 10_000, 15_000, 20_000, 25_000, 35_000, 50_000, 75_000, 150_000];
@@ -32,8 +28,8 @@ fn when(secs: u64) -> String {
 }
 
 impl LibraryApp {
-    /// Saves a detection change right away and tells the recorder.
-    fn apply_detection(&mut self, change: impl FnOnce(&mut crate::config::Config), message: String) {
+    /// Saves a config change right away and tells the recorder.
+    fn apply_config(&mut self, change: impl FnOnce(&mut crate::config::Config), message: Option<String>) {
         let mut cfg = self.shared.cfg.clone();
         change(&mut cfg);
         let cfg = cfg.sanitized();
@@ -42,14 +38,88 @@ impl LibraryApp {
                 self.shared.cfg = cfg;
                 self.settings.reset(&self.shared.cfg);
                 crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::Reload);
-                self.shared.toast(message, false);
+                if let Some(m) = message {
+                    self.shared.toast(m, false);
+                }
             }
             Err(e) => self.shared.toast(format!("Could not save: {e}"), true),
         }
     }
 
+    /// Every game: found ones, plus ones on the lists that were never seen.
+    fn game_list(&self) -> Vec<GameRecord> {
+        let mut list: Vec<GameRecord> = self.games.games.clone();
+        let d = &self.shared.cfg.detection;
+        for exe in d.include.iter().chain(d.exclude.iter()) {
+            if !list.iter().any(|g| &g.exe == exe) {
+                list.push(GameRecord {
+                    exe: exe.clone(),
+                    name: exe.trim_end_matches(".exe").to_string(),
+                    path: String::new(),
+                    how: if d.include.contains(exe) { "Added by you" } else { "Turned off by you" }.into(),
+                    first_seen: 0,
+                    last_seen: 0,
+                    recording: false,
+                    capturing: false,
+                    capture_started: 0,
+                });
+            }
+        }
+        list.sort_by(|a, b| b.recording.cmp(&a.recording).then(b.last_seen.cmp(&a.last_seen)).then(a.name.cmp(&b.name)));
+        list
+    }
+
+    /// (clips, bytes) saved for a game.
+    fn game_clips(&self, g: &GameRecord) -> (usize, u64) {
+        let folder = crate::util::sanitize_file_name(&g.name);
+        let mine = self.clips.iter().filter(|c| c.game == folder || c.game == g.name);
+        mine.fold((0, 0), |(n, b), c| (n + 1, b + c.size))
+    }
+
+    /// One line about how a game records: "60 fps · 1080p · 4 Mbit/s · 2:00".
+    fn quality_line(&self, exe: &str) -> String {
+        let c = self.shared.cfg.for_game(exe);
+        format!(
+            "{} fps  \u{00b7}  {}  \u{00b7}  {}  \u{00b7}  {}",
+            c.video.fps,
+            c.video.resolution.label(),
+            theme::fmt_mbps(c.video.bitrate_kbps),
+            theme::fmt_short(f64::from(c.replay_seconds))
+        )
+    }
+
+    /// The game's icon (from its program file) or its first letter.
+    fn game_icon(&mut self, ui: &mut egui::Ui, t: &Tokens, g: &GameRecord, size: f32, enabled: bool) {
+        let (r, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+        let tex = if !g.path.is_empty() && Path::new(&g.path).exists() { self.thumb(Path::new(&g.path)).map(|t| t.id()) } else { None };
+        match tex {
+            Some(id) => {
+                let tint = if enabled { Color32::WHITE } else { Color32::from_white_alpha(110) };
+                ui.painter().image(id, r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), tint);
+            }
+            None => {
+                ui.painter().rect_filled(r, CornerRadius::same(theme::R_CONTROL), t.control_hover);
+                let letter = g.name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+                ui.painter().text(
+                    r.center(),
+                    egui::Align2::CENTER_CENTER,
+                    letter,
+                    egui::FontId::new(size * 0.45, egui::FontFamily::Name(theme::SEMIBOLD.into())),
+                    if enabled { t.text } else { t.text3 },
+                );
+            }
+        }
+    }
+
     pub(super) fn games_page(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        if let Some(exe) = self.game_open.clone() {
+            match self.game_list().into_iter().find(|g| g.exe == exe) {
+                Some(g) => return self.game_detail(ui, t, &g),
+                None => self.game_open = None,
+            }
+        }
         let icons = self.shared.icons;
+        let list = self.game_list();
         ui.horizontal(|ui| {
             ui.label(theme::title("Games").color(t.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -64,291 +134,287 @@ impl LibraryApp {
                     db.save();
                     self.games = db;
                     let e = exe.clone();
-                    self.apply_detection(move |c| games::set_enabled(c, &e, true, true), format!("{pretty} will be recorded."));
+                    self.apply_config(move |c| games::set_enabled(c, &e, true, true), Some(format!("{pretty} will be recorded.")));
                 }
             });
         });
-        ui.label(
-            RichText::new("Replay finds games by itself. Turn off any game you don't want recorded, or add one it missed.")
-                .color(t.text2),
-        );
-        ui.add_space(12.0);
+        // Memory in one sentence: every enabled game recording at once.
+        let enabled: Vec<&str> = list.iter().filter(|g| games::is_enabled(&self.shared.cfg.detection, &g.exe)).map(|g| g.exe.as_str()).collect();
+        let sentence = match enabled.len() {
+            0 => "Replay finds games by itself. Turn off any you don't want recorded.".to_string(),
+            1 => format!("While it records, Replay uses about {} of memory.", theme::fmt_bytes(self.shared.cfg.recording_memory(&enabled))),
+            n => format!(
+                "One game uses up to {} of memory while it records; all {n} at once would use {}.",
+                theme::fmt_bytes(enabled.iter().map(|e| self.shared.cfg.recording_memory(&[e])).max().unwrap_or(0)),
+                theme::fmt_bytes(self.shared.cfg.recording_memory(&enabled))
+            ),
+        };
+        ui.label(RichText::new(sentence).color(t.text2));
+        ui.add_space(16.0);
 
-        // Games on the lists that were never seen running still get a row.
-        let mut list: Vec<GameRecord> = self.games.games.clone();
-        for exe in self.shared.cfg.detection.include.iter().chain(self.shared.cfg.detection.exclude.iter()) {
-            if !list.iter().any(|g| &g.exe == exe) {
-                let how = if self.shared.cfg.detection.include.contains(exe) { "Added by you" } else { "Turned off by you" };
-                list.push(GameRecord {
-                    exe: exe.clone(),
-                    name: exe.trim_end_matches(".exe").to_string(),
-                    path: String::new(),
-                    how: how.into(),
-                    first_seen: 0,
-                    last_seen: 0,
-                    recording: false,
-                    capturing: false,
-                });
-            }
-        }
-        list.sort_by(|a, b| b.recording.cmp(&a.recording).then(b.last_seen.cmp(&a.last_seen)).then(a.name.cmp(&b.name)));
-
-        if !list.is_empty() {
-            self.memory_card(ui, t, &list);
-            ui.add_space(4.0);
-        }
         if list.is_empty() {
-            ui.add_space(60.0);
+            ui.add_space(48.0);
             ui.vertical_centered(|ui| {
                 if icons {
                     ui.label(theme::glyph(icon::GAME, 40.0).color(t.text3));
                 }
                 ui.add_space(8.0);
-                ui.label(theme::subtitle("No games found yet").color(t.text));
-                ui.label(RichText::new("Start a game and it shows up here. You can also add one yourself.").color(t.text2));
+                ui.label(theme::subtitle("No games yet").color(t.text));
+                ui.label(RichText::new("Start a game and it shows up here. You can also add one.").color(t.text2));
             });
             return;
         }
 
         let recording: Vec<&GameRecord> = list.iter().filter(|g| g.recording).collect();
-        let mut action: Option<RowAction> = None;
+        let on: Vec<&GameRecord> = list.iter().filter(|g| !g.recording && games::is_enabled(&self.shared.cfg.detection, &g.exe)).collect();
+        let off: Vec<&GameRecord> = list.iter().filter(|g| !games::is_enabled(&self.shared.cfg.detection, &g.exe)).collect();
+        let mut toggle = None;
+        let mut open = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_max_width(980.0);
-            ui.spacing_mut().item_spacing.y = 4.0;
-            if !recording.is_empty() {
-                theme::section(ui, t, "Recording now");
-                for g in &recording {
-                    self.game_row(ui, t, g, &mut action);
+            ui.set_max_width(ui.available_width().min(1000.0));
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for (title, group) in [("Recording now", &recording), ("Your games", &on), ("Turned off", &off)] {
+                if group.is_empty() {
+                    continue;
                 }
-            }
-            let others: Vec<&GameRecord> = list.iter().filter(|g| !g.recording).collect();
-            if !others.is_empty() {
-                theme::section(ui, t, if recording.is_empty() { "All games" } else { "Other games" });
-                for g in others {
-                    self.game_row(ui, t, g, &mut action);
+                ui.add_space(12.0);
+                ui.label(theme::body_strong(title).color(t.text));
+                ui.add_space(6.0);
+                for g in group.iter() {
+                    match self.game_row(ui, t, g) {
+                        Some(RowClick::Toggle(v)) => toggle = Some((g.exe.clone(), g.name.clone(), v, g.how == "Added by you")),
+                        Some(RowClick::Open) => open = Some(g.exe.clone()),
+                        None => {}
+                    }
                 }
             }
             ui.add_space(24.0);
         });
-
-        match action {
-            Some(RowAction::Toggle { exe, name, on, by_user }) => {
-                let msg = if on { format!("{name} will be recorded.") } else { format!("{name} will not be recorded.") };
-                self.apply_detection(move |c| games::set_enabled(c, &exe, on, by_user), msg);
-            }
-            Some(RowAction::Forget { exe, name }) => self.forget_game(exe, name),
-            Some(RowAction::Expand(exe)) => {
-                self.game_open = if self.game_open.as_deref() == Some(exe.as_str()) { None } else { Some(exe) };
-            }
-            Some(RowAction::Set { exe, name, settings }) => {
-                let msg = if self.games.games.iter().any(|g| g.exe == exe && g.recording) {
-                    format!("{name}: saved. Recording restarts with the new settings.")
-                } else {
-                    format!("{name}: saved.")
-                };
-                self.apply_detection(
-                    move |c| {
-                        if settings.is_empty() {
-                            c.games.remove(&exe);
-                        } else {
-                            c.games.insert(exe, settings);
-                        }
-                    },
-                    msg,
-                );
-            }
-            None => {}
+        if let Some((exe, name, v, by_user)) = toggle {
+            let msg = if v { format!("{name} will be recorded.") } else { format!("{name} will not be recorded.") };
+            self.apply_config(move |c| games::set_enabled(c, &exe, v, by_user), Some(msg));
+        }
+        if let Some(exe) = open {
+            self.game_open = Some(exe);
         }
     }
 
-    fn forget_game(&mut self, exe: String, name: String) {
-        let mut db = GameDb::load();
-        db.forget(&exe);
-        db.save();
-        self.games = db;
-        self.apply_detection(
-            move |c| {
-                c.detection.include.retain(|e| e != &exe);
-                c.detection.exclude.retain(|e| e != &exe);
-                c.games.remove(&exe);
-            },
-            format!("{name} was removed from the list."),
-        );
+    fn game_row(&mut self, ui: &mut egui::Ui, t: &Tokens, g: &GameRecord) -> Option<RowClick> {
+        let enabled = games::is_enabled(&self.shared.cfg.detection, &g.exe);
+        let (clips, bytes) = self.game_clips(g);
+        let own = self.shared.cfg.games.contains_key(&g.exe);
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 64.0), Sense::click());
+        let hovered = resp.hovered();
+        ui.painter().rect(rect, CornerRadius::same(theme::R_CONTROL), if hovered { t.card_hover } else { t.card }, Stroke::new(1.0, t.card_stroke), StrokeKind::Inside);
+        let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(16.0, 8.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        let mut click = None;
+        let ui = &mut inner;
+        self.game_icon(ui, t, g, 32.0, enabled);
+        ui.add_space(8.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.horizontal(|ui| {
+                ui.label(theme::body_strong(&g.name).color(if enabled { t.text } else { t.text2 }));
+                if g.capturing {
+                    pill(ui, t.recording, "Recording session");
+                } else if g.recording {
+                    pill(ui, t.success, "Replay on");
+                }
+                if own {
+                    pill(ui, t.text2, "Own settings");
+                }
+            });
+            let mut parts = Vec::new();
+            if clips > 0 {
+                parts.push(format!("{clips} {}  \u{00b7}  {}", if clips == 1 { "clip" } else { "clips" }, theme::fmt_bytes(bytes)));
+            }
+            if enabled {
+                parts.push(self.quality_line(&g.exe));
+            } else {
+                parts.push(g.how.clone());
+            }
+            ui.label(theme::caption(parts.join("  \u{00b7}  ")).color(t.text2));
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if self.shared.icons {
+                ui.label(theme::glyph(icon::CHEVRON_RIGHT, 12.0).color(t.text3));
+            }
+            ui.add_space(8.0);
+            let mut v = enabled;
+            if theme::toggle(ui, t, &mut v).on_hover_text(if enabled { "Recording is on" } else { "Recording is off" }).changed() {
+                click = Some(RowClick::Toggle(v));
+            }
+        });
+        if click.is_none() && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            click = Some(RowClick::Open);
+        }
+        click
     }
 
-    fn game_row(&self, ui: &mut egui::Ui, t: &Tokens, g: &GameRecord, action: &mut Option<RowAction>) {
+    /// One game's page: record switch, quality, memory and clips.
+    fn game_detail(&mut self, ui: &mut egui::Ui, t: &Tokens, g: &GameRecord) {
         let icons = self.shared.icons;
         let enabled = games::is_enabled(&self.shared.cfg.detection, &g.exe);
-        let custom = self.shared.cfg.games.get(&g.exe).cloned().unwrap_or_default();
-        let open = self.game_open.as_deref() == Some(g.exe.as_str());
-        theme::setting_frame(t).show(ui, |ui| {
-            ui.set_min_height(44.0);
-            ui.horizontal(|ui| {
-                // Letter tile in the accent tint, like an app avatar.
-                let (r, _) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::hover());
-                let tint = if enabled { t.accent.gamma_multiply(0.25) } else { t.control };
-                ui.painter().rect_filled(r, CornerRadius::same(theme::R_CONTROL), tint);
-                let letter = g.name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-                ui.painter().text(
-                    r.center(),
-                    egui::Align2::CENTER_CENTER,
-                    letter,
-                    egui::FontId::new(16.0, egui::FontFamily::Name(theme::SEMIBOLD.into())),
-                    if enabled { t.accent } else { t.text3 },
-                );
-                ui.add_space(6.0);
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(&g.name).color(if enabled { t.text } else { t.text2 }));
-                        if g.recording {
-                            pill(ui, t.success, "Recording");
-                        } else if !enabled {
-                            pill(ui, t.text3, "Off");
-                        }
-                        if !custom.is_empty() {
-                            pill(ui, t.accent, "Own settings");
-                        }
-                    });
-                    let mut parts = vec![g.exe.clone(), g.how.clone()];
-                    if g.last_seen > 0 {
-                        parts.push(format!("last played {}", when(g.last_seen)));
-                    }
-                    if enabled {
-                        let buf = self.shared.cfg.for_game(&g.exe).buffer_bytes();
-                        parts.push(format!("{} buffer", theme::fmt_bytes(buf)));
-                    }
-                    ui.label(theme::caption(parts.join("  ·  ")).color(t.text2));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let forget_btn = theme::subtle(ui, theme::label_with_icon(icons, icon::DELETE, if icons { "" } else { "Forget" }));
-                    if forget_btn.on_hover_text("Remove from this list").clicked() {
-                        *action = Some(RowAction::Forget { exe: g.exe.clone(), name: g.name.clone() });
-                    }
-                    let gear = theme::subtle(ui, theme::label_with_icon(icons, icon::SETTINGS, if icons { "" } else { "Settings" }));
-                    if gear.on_hover_text("Quality settings for this game").clicked() {
-                        *action = Some(RowAction::Expand(g.exe.clone()));
-                    }
-                    ui.add_space(8.0);
-                    let mut on = enabled;
-                    if theme::toggle(ui, t, &mut on).on_hover_text(if enabled { "Recording is on" } else { "Recording is off" }).changed() {
-                        *action = Some(RowAction::Toggle { exe: g.exe.clone(), name: g.name.clone(), on, by_user: g.how == "Added by you" });
-                    }
-                    ui.label(theme::caption(if enabled { "Record" } else { "Off" }).color(t.text2));
-                });
-            });
-            if open {
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-                if let Some(settings) = self.game_settings(ui, t, &g.exe, &custom) {
-                    *action = Some(RowAction::Set { exe: g.exe.clone(), name: g.name.clone(), settings });
-                }
+        ui.horizontal(|ui| {
+            if theme::subtle(ui, theme::label_with_icon(icons, icon::BACK, if icons { "" } else { "Back" })).on_hover_text("All games").clicked() {
+                self.game_open = None;
             }
-        });
-    }
-
-    /// Memory estimate: now, for the biggest single game, and for every
-    /// game at once. Each game counts with its own settings.
-    fn memory_card(&self, ui: &mut egui::Ui, t: &Tokens, list: &[GameRecord]) {
-        let cfg = &self.shared.cfg;
-        let enabled: Vec<&str> = list.iter().filter(|g| games::is_enabled(&cfg.detection, &g.exe)).map(|g| g.exe.as_str()).collect();
-        let now: Vec<&str> = list.iter().filter(|g| g.recording && self.recorder_running).map(|g| g.exe.as_str()).collect();
-        let biggest = enabled.iter().max_by_key(|e| cfg.for_game(e).buffer_bytes()).copied();
-        theme::card(t).show(ui, |ui| {
-            ui.set_width(ui.available_width().min(980.0 - 32.0));
-            ui.label(theme::body_strong("Memory").color(t.text));
             ui.add_space(4.0);
-            egui::Grid::new("memory").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
-                let mut row = |label: &str, value: String| {
-                    ui.label(RichText::new(label).color(t.text2));
-                    ui.label(RichText::new(value).color(t.text));
-                    ui.end_row();
-                };
-                row("Now", theme::fmt_bytes(cfg.recording_memory(&now)));
-                if let Some(b) = biggest {
-                    let name = list.iter().find(|g| g.exe == b).map(|g| g.name.as_str()).unwrap_or(b);
-                    row("One game (largest)", format!("{}  ({name})", theme::fmt_bytes(cfg.recording_memory(&[b]))));
+            self.game_icon(ui, t, g, 40.0, enabled);
+            ui.add_space(4.0);
+            ui.vertical(|ui| {
+                ui.label(theme::subtitle(&g.name).color(t.text));
+                let mut parts = vec![g.exe.clone(), g.how.clone()];
+                if g.last_seen > 0 {
+                    parts.push(format!("last played {}", when(g.last_seen)));
                 }
-                if enabled.len() > 1 {
-                    row(&format!("All {} games at once", enabled.len()), theme::fmt_bytes(cfg.recording_memory(&enabled)));
-                }
+                ui.label(theme::caption(parts.join("  \u{00b7}  ")).color(t.text2));
             });
-            ui.add_space(4.0);
-            ui.label(
-                theme::caption("Each game keeps its own buffer: quality \u{00d7} replay length. The microphone buffer is shared. Lower a game's quality or length to use less.")
-                    .color(t.text3),
-            );
         });
-    }
-
-    /// The per-game settings panel. Returns new settings when one changed.
-    fn game_settings(&self, ui: &mut egui::Ui, t: &Tokens, exe: &str, current: &GameSettings) -> Option<GameSettings> {
-        let general = &self.shared.cfg;
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.game_open = None;
+        }
+        ui.add_space(12.0);
+        let current = self.shared.cfg.games.get(&g.exe).cloned().unwrap_or_default();
+        let general = self.shared.cfg.clone();
         let mut s = current.clone();
-        ui.label(theme::caption("Settings for this game only. \"Same as general\" follows Settings > Recording.").color(t.text2));
-        ui.add_space(4.0);
-        egui::Grid::new(("game-settings", exe)).num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
-            ui.label(RichText::new("Frame rate").color(t.text));
-            let label = |v: Option<u32>| v.map(|f| format!("{f} fps")).unwrap_or_else(|| format!("Same as general ({} fps)", general.video.fps));
-            egui::ComboBox::from_id_salt(("g-fps", exe)).width(240.0).selected_text(label(s.fps)).show_ui(ui, |ui| {
-                ui.selectable_value(&mut s.fps, None, label(None));
-                for f in FPS_CHOICES {
-                    ui.selectable_value(&mut s.fps, Some(f), label(Some(f)));
+        let mut toggle = None;
+        let mut forget = false;
+        let mut show_clips = false;
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_max_width(ui.available_width().min(1000.0));
+            ui.spacing_mut().item_spacing.y = 2.0;
+            theme::setting(ui, t, icons, Some(icon::RECORD), "Record this game", "Keep a replay buffer while it runs", |ui| {
+                let mut v = enabled;
+                if theme::toggle(ui, t, &mut v).changed() {
+                    toggle = Some(v);
                 }
             });
-            ui.end_row();
 
-            ui.label(RichText::new("Resolution").color(t.text));
-            let label = |v: Option<Resolution>| match v {
-                Some(r) => r.label().to_string(),
-                None => format!("Same as general ({})", general.video.resolution.label()),
-            };
-            egui::ComboBox::from_id_salt(("g-res", exe)).width(240.0).selected_text(label(s.resolution)).show_ui(ui, |ui| {
-                ui.selectable_value(&mut s.resolution, None, label(None));
-                for r in Resolution::ALL {
-                    ui.selectable_value(&mut s.resolution, Some(r), label(Some(r)));
-                }
+            theme::section(ui, t, "Quality");
+            let combo_w = 260.0;
+            theme::setting(ui, t, icons, Some(icon::VIDEO), "Frame rate", "", |ui| {
+                let label = |v: Option<u32>| v.map(|f| format!("{f} fps")).unwrap_or_else(|| format!("Same as general ({} fps)", general.video.fps));
+                egui::ComboBox::from_id_salt("g-fps").width(combo_w).selected_text(label(s.fps)).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut s.fps, None, label(None));
+                    for f in FPS_CHOICES {
+                        ui.selectable_value(&mut s.fps, Some(f), label(Some(f)));
+                    }
+                });
             });
-            ui.end_row();
-
-            ui.label(RichText::new("Quality").color(t.text));
-            let label = |v: Option<u32>| match v {
-                Some(k) => theme::fmt_mbps(k),
-                None => format!("Same as general ({})", theme::fmt_mbps(general.video.bitrate_kbps)),
-            };
-            egui::ComboBox::from_id_salt(("g-br", exe)).width(240.0).selected_text(label(s.bitrate_kbps)).show_ui(ui, |ui| {
-                ui.selectable_value(&mut s.bitrate_kbps, None, label(None));
-                for k in KBPS_CHOICES {
-                    ui.selectable_value(&mut s.bitrate_kbps, Some(k), label(Some(k)));
-                }
+            theme::setting(ui, t, icons, None, "Resolution", "", |ui| {
+                let label = |v: Option<Resolution>| match v {
+                    Some(r) => r.label().to_string(),
+                    None => format!("Same as general ({})", general.video.resolution.label()),
+                };
+                egui::ComboBox::from_id_salt("g-res").width(combo_w).selected_text(label(s.resolution)).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut s.resolution, None, label(None));
+                    for r in Resolution::ALL {
+                        ui.selectable_value(&mut s.resolution, Some(r), label(Some(r)));
+                    }
+                });
             });
-            ui.end_row();
-
-            ui.label(RichText::new("Replay length").color(t.text));
-            let label = |v: Option<u32>| match v {
-                Some(secs) => theme::fmt_short(f64::from(secs)),
-                None => format!("Same as general ({})", theme::fmt_short(f64::from(general.replay_seconds))),
-            };
-            egui::ComboBox::from_id_salt(("g-len", exe)).width(240.0).selected_text(label(s.replay_seconds)).show_ui(ui, |ui| {
-                ui.selectable_value(&mut s.replay_seconds, None, label(None));
-                for secs in LENGTH_CHOICES {
-                    ui.selectable_value(&mut s.replay_seconds, Some(secs), label(Some(secs)));
-                }
+            theme::setting(ui, t, icons, None, "Quality", "Lower uses less memory and disk", |ui| {
+                let label = |v: Option<u32>| match v {
+                    Some(k) => theme::fmt_mbps(k),
+                    None => format!("Same as general ({})", theme::fmt_mbps(general.video.bitrate_kbps)),
+                };
+                egui::ComboBox::from_id_salt("g-br").width(combo_w).selected_text(label(s.bitrate_kbps)).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut s.bitrate_kbps, None, label(None));
+                    for k in KBPS_CHOICES {
+                        ui.selectable_value(&mut s.bitrate_kbps, Some(k), label(Some(k)));
+                    }
+                });
             });
-            ui.end_row();
-        });
-        let mut preview = general.clone();
-        preview.games.insert(exe.to_string(), s.clone());
-        ui.add_space(4.0);
-        ui.label(theme::caption(format!("This game's buffer: about {}", theme::fmt_bytes(preview.sanitized().for_game(exe).buffer_bytes()))).color(t.text2));
-        if !current.is_empty() {
-            ui.add_space(4.0);
-            if theme::subtle(ui, theme::caption("Use the general settings")).clicked() {
+            theme::setting(ui, t, icons, Some(icon::CLOCK), "Replay length", "", |ui| {
+                let label = |v: Option<u32>| match v {
+                    Some(secs) => theme::fmt_short(f64::from(secs)),
+                    None => format!("Same as general ({})", theme::fmt_short(f64::from(general.replay_seconds))),
+                };
+                egui::ComboBox::from_id_salt("g-len").width(combo_w).selected_text(label(s.replay_seconds)).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut s.replay_seconds, None, label(None));
+                    for secs in LENGTH_CHOICES {
+                        ui.selectable_value(&mut s.replay_seconds, Some(secs), label(Some(secs)));
+                    }
+                });
+            });
+            if !current.is_empty() && ui.add(egui::Button::new(theme::caption("Use the general settings").color(t.accent)).frame_when_inactive(false)).clicked() {
                 s = GameSettings::default();
             }
+
+            theme::section(ui, t, "Memory and storage");
+            let mut preview = general.clone();
+            if s.is_empty() {
+                preview.games.remove(&g.exe);
+            } else {
+                preview.games.insert(g.exe.clone(), s.clone());
+            }
+            let preview = preview.sanitized();
+            let buffer = preview.for_game(&g.exe).buffer_bytes();
+            let total = preview.recording_memory(&[g.exe.as_str()]);
+            theme::setting(ui, t, icons, Some(icon::INFO), "Memory while it records", &format!("{} for its replay buffer, the rest for capture and encoding", theme::fmt_bytes(buffer)), |ui| {
+                ui.label(RichText::new(theme::fmt_bytes(total)).color(t.text));
+            });
+            let (clips, bytes) = self.game_clips(g);
+            let desc = if clips == 0 { "No clips yet".to_string() } else { format!("{clips} {} use {}", if clips == 1 { "clip" } else { "clips" }, theme::fmt_bytes(bytes)) };
+            theme::setting(ui, t, icons, Some(icon::LIBRARY), "Clips", &desc, |ui| {
+                if clips > 0 && theme::button(ui, "Show clips", true).clicked() {
+                    show_clips = true;
+                }
+            });
+
+            ui.add_space(20.0);
+            if ui.add(egui::Button::new(theme::label_with_icon(icons, icon::DELETE, "Remove from this list").color(t.critical)).frame_when_inactive(false)).clicked() {
+                forget = true;
+            }
+            ui.add_space(24.0);
+        });
+
+        if s != current {
+            let exe = g.exe.clone();
+            let msg = if g.recording { Some(format!("{}: recording restarts with the new settings.", g.name)) } else { None };
+            self.apply_config(
+                move |c| {
+                    if s.is_empty() {
+                        c.games.remove(&exe);
+                    } else {
+                        c.games.insert(exe, s);
+                    }
+                },
+                msg,
+            );
         }
-        (s != *current).then_some(s)
+        if let Some(v) = toggle {
+            let (exe, by_user) = (g.exe.clone(), g.how == "Added by you");
+            let msg = if v { format!("{} will be recorded.", g.name) } else { format!("{} will not be recorded.", g.name) };
+            self.apply_config(move |c| games::set_enabled(c, &exe, v, by_user), Some(msg));
+        }
+        if show_clips {
+            self.gallery.chip = super::clips::Chip::Game(crate::util::sanitize_file_name(&g.name));
+            self.page = Page::Clips;
+        }
+        if forget {
+            let exe = g.exe.clone();
+            let mut db = GameDb::load();
+            db.forget(&exe);
+            db.save();
+            self.games = db;
+            self.game_open = None;
+            self.apply_config(
+                move |c| {
+                    c.detection.include.retain(|e| e != &exe);
+                    c.detection.exclude.retain(|e| e != &exe);
+                    c.games.remove(&exe);
+                },
+                Some(format!("{} was removed from the list.", g.name)),
+            );
+        }
     }
+}
+
+enum RowClick {
+    Toggle(bool),
+    Open,
 }
 
 /// A small status pill (dot and label).
@@ -356,7 +422,7 @@ fn pill(ui: &mut egui::Ui, color: Color32, text: &str) {
     let galley = ui.painter().layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), color);
     let size = galley.size() + Vec2::new(22.0, 4.0);
     let (r, _) = ui.allocate_exact_size(size, Sense::hover());
-    ui.painter().rect(r, CornerRadius::same(10), color.gamma_multiply(0.15), Stroke::NONE, egui::StrokeKind::Inside);
+    ui.painter().rect(r, CornerRadius::same(10), color.gamma_multiply(0.15), Stroke::NONE, StrokeKind::Inside);
     ui.painter().circle_filled(egui::pos2(r.left() + 9.0, r.center().y), 3.0, color);
     ui.painter().galley(egui::pos2(r.left() + 16.0, r.top() + 2.0), galley, color);
 }
