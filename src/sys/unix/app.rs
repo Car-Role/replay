@@ -29,6 +29,8 @@ pub struct GameInfo {
     /// Stable key for the recording (a process id, or "screen" on Linux).
     pub key: String,
     pub pid: u32,
+    /// Lower-case executable name, as used by the include/exclude lists.
+    pub exe: String,
     pub name: String,
 }
 
@@ -59,6 +61,8 @@ pub trait Backend {
     fn focused_exe(&self) -> Option<String> {
         None
     }
+    /// The include/exclude lists changed; forget cached detection results.
+    fn config_changed(&mut self) {}
 }
 
 pub fn ring_for(cfg: &Config, kbps: u32) -> PacketRing {
@@ -126,6 +130,8 @@ struct App {
     update_ready: Option<String>,
     update_notice: Option<(String, String)>,
     next_tick: Instant,
+    /// Executables last published as recording in games.json.
+    published: Vec<String>,
 }
 
 fn icon(rgba: &[u8]) -> Option<Icon> {
@@ -246,6 +252,7 @@ impl App {
             update_ready: crate::update::staged().map(|s| s.version),
             update_notice: None,
             next_tick: Instant::now() + TICK,
+            published: Vec::new(),
         };
         app.register_hotkeys(true);
         let marker = crate::paths::data_dir().join("tray-hint-shown");
@@ -325,6 +332,7 @@ impl App {
                 continue;
             }
             log::info!("detected {} (pid {})", g.name, g.pid);
+            crate::games::note_detected(&g.exe, &g.name, "", "Detected");
             match self.backend.start(&g, &self.cfg) {
                 Ok(rec) => {
                     // A new session for the same key replaces any ended one.
@@ -373,6 +381,12 @@ impl App {
     }
 
     fn rebuild_tray(&mut self) {
+        let mut exes: Vec<String> = self.running().map(|s| s.rec.game().exe.clone()).collect();
+        exes.sort();
+        if exes != self.published {
+            crate::games::note_recording(&exes);
+            self.published = exes;
+        }
         let names: Vec<String> = self.running().map(|s| s.rec.game().name.clone()).collect();
         let sig = format!(
             "{names:?}|{}|{:?}|{:?}|{}|{}",
@@ -623,6 +637,11 @@ impl App {
         log::info!("settings reloaded");
         if old.hotkeys != self.cfg.hotkeys {
             self.register_hotkeys(true);
+        }
+        if old.detection != self.cfg.detection {
+            // Games turned off stop at the next tick; turned on start again.
+            self.backend.config_changed();
+            self.failed_keys.clear();
         }
         if old.video != self.cfg.video || old.replay_seconds != self.cfg.replay_seconds || old.audio != self.cfg.audio {
             for s in &mut self.sessions {

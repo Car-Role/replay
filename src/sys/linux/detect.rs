@@ -22,7 +22,8 @@ const KNOWN: &[&str] = &["runelite", "osclient", "minecraft", "prismlauncher", "
 #[derive(Clone)]
 struct Verdict {
     start: u64,
-    game: Option<String>,
+    /// (executable, game name)
+    game: Option<(String, String)>,
 }
 
 pub struct Detector {
@@ -83,7 +84,16 @@ impl Detector {
         Self { cache: HashMap::new(), uid: unsafe { libc::getuid() } }
     }
 
-    fn classify(&self, pid: u32, cfg: &DetectionConfig) -> Option<String> {
+    fn classify(&self, pid: u32, cfg: &DetectionConfig) -> Option<(String, String)> {
+        let name = self.classify_name(pid, cfg)?;
+        let exe = fs::read_link(format!("/proc/{pid}/exe"))
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()))
+            .unwrap_or_default();
+        Some((exe, name))
+    }
+
+    fn classify_name(&self, pid: u32, cfg: &DetectionConfig) -> Option<String> {
         let comm = String::from_utf8_lossy(&read(format!("/proc/{pid}/comm"))?).trim().to_ascii_lowercase();
         let exe = fs::read_link(format!("/proc/{pid}/exe"))
             .ok()
@@ -126,8 +136,8 @@ impl Detector {
         KNOWN.iter().find(|k| lower.contains(*k)).map(|k| pretty(k))
     }
 
-    /// Running games as (pid, name), oldest first.
-    pub fn scan(&mut self, cfg: &DetectionConfig) -> Vec<(u32, String)> {
+    /// Running games as (pid, executable, name), oldest first.
+    pub fn scan(&mut self, cfg: &DetectionConfig) -> Vec<(u32, String, String)> {
         use std::os::unix::fs::MetadataExt;
         let mut seen = Vec::new();
         let mut found = Vec::new();
@@ -147,13 +157,13 @@ impl Detector {
                     v
                 }
             };
-            if let Some(name) = verdict.game {
-                found.push((start, pid, name));
+            if let Some((exe, name)) = verdict.game {
+                found.push((start, pid, exe, name));
             }
         }
         self.cache.retain(|pid, _| seen.contains(pid));
         found.sort();
-        found.into_iter().map(|(_, pid, name)| (pid, name)).collect()
+        found.into_iter().map(|(_, pid, exe, name)| (pid, exe, name)).collect()
     }
 
     pub fn forget(&mut self) {
