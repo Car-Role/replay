@@ -247,6 +247,12 @@ impl Editor {
         self.vertical = true;
     }
 
+    /// For `--snapshot`: a long clip squeezed into 10 MB, which warns.
+    pub fn snapshot_small(&mut self) {
+        self.vertical = false;
+        self.preset = Preset::Discord10;
+    }
+
     fn clock(&self) -> f64 {
         match &self.audio {
             Some(a) if a.frames > 0 => a.position(),
@@ -1111,7 +1117,7 @@ impl Editor {
         // Always one note line, so the button never moves.
         let soft = !copy && spec.bitrate_kbps < 800;
         let (note, color) = if soft {
-            (format!("Long for this size, so it is saved at {oh}p and may look soft. Trim it shorter or pick a bigger size."), t.text)
+            (format!("Long for {:.0} MB, so it is saved at {oh}p and may look soft. Trim it or pick a bigger size.", size_mb.unwrap_or(0.0)), t.text)
         } else if !copy {
             ("Encoded as H.264, so it plays on every phone and site.".to_string(), t.text3)
         } else if self.exact {
@@ -1120,7 +1126,10 @@ impl Editor {
             (format!("Copied as {}, so nothing is lost.", self.codec), t.text3)
         };
         if soft {
-            theme::caution(ui, &t, icons, &note, None);
+            let fix = matches!(self.preset, Preset::Discord10).then_some("Use 50 MB instead");
+            if theme::caution(ui, &t, icons, &note, fix) {
+                self.preset = Preset::Discord50;
+            }
         } else {
             ui.add(egui::Label::new(theme::caption(note).color(color)).truncate());
         }

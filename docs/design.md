@@ -45,7 +45,7 @@ the best clip apps (Medal, SteelSeries Moments, Steam game recording, Windows Ph
 | on accent | `#1A0B12` | text on the accent |
 | recording | `#FF4D4F` | recording only |
 | success | `#6CCB5F` | replay buffer ready |
-| caution | `#FCE100` on `#433519` | InfoBar: 16 px warning glyph in caution, the sentence in primary text, 8 px padding, radius 4, full width |
+| caution | `#FCE100` on `#433519` | InfoBar: 16 px warning glyph in caution, the sentence in primary text, 12 px padding, radius 4, full width; an action is a 24 px standard button on the text column |
 
 Type: Segoe UI, 12 / 14 / 18 / 20 / 28, Regular and Semibold only, sentence case. Spacing on a 4 px grid
 (4, 8, 12, 16, 24, 32). Radius 4 for controls and thumbnails, 8 for panels, dialogs and toasts.

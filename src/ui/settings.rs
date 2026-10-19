@@ -225,7 +225,7 @@ impl SettingsPage {
             });
         });
         let one = theme::fmt_bytes(d.recording_memory(&["(any game)"]));
-        theme::setting(ui, t, false, None, "Bitrate", "Higher is sharper; lower uses less memory and disk.", |ui| {
+        theme::setting(ui, t, false, None, "Bitrate", "Higher is sharper; lower uses less memory and disk", |ui| {
             let mut kbps = d.video.bitrate_kbps;
             let label = theme::fmt_mbps(kbps);
             let r = theme::slider_row(ui, t, label, &mut kbps, 500..=150_000, true).on_hover_text(format!("About {one} of memory while a game records"));

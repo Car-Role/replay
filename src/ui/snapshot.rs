@@ -20,6 +20,7 @@ enum Step {
     Selecting,
     Editor,
     EditorVertical,
+    EditorSmall,
     Games,
     GameDetail,
     SettingsGeneral,
@@ -34,12 +35,13 @@ enum Step {
     Empty,
 }
 
-const STEPS: [(Step, &str); 17] = [
+const STEPS: [(Step, &str); 18] = [
     (Step::Clips, "01-clips"),
     (Step::ClipsByGame, "02-clips-by-game"),
     (Step::Selecting, "03-clips-selecting"),
     (Step::Editor, "04-editor"),
     (Step::EditorVertical, "05-editor-vertical"),
+    (Step::EditorSmall, "05b-editor-10mb-warning"),
     (Step::Games, "06-games"),
     (Step::GameDetail, "07-game"),
     (Step::SettingsGeneral, "08-settings-general"),
@@ -144,6 +146,12 @@ impl LibraryApp {
             Step::EditorVertical => {
                 if let Some(ed) = &mut self.editor {
                     ed.snapshot_vertical();
+                }
+                self.page = Page::Editor;
+            }
+            Step::EditorSmall => {
+                if let Some(ed) = &mut self.editor {
+                    ed.snapshot_small();
                 }
                 self.page = Page::Editor;
             }

@@ -697,7 +697,7 @@ pub fn caution(ui: &mut Ui, t: &Tokens, icons: bool, text: &str, action: Option<
     egui::Frame::new()
         .fill(t.caution_bg)
         .corner_radius(CornerRadius::same(R_CONTROL))
-        .inner_margin(egui::Margin::same(8))
+        .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_top(|ui| {
@@ -706,11 +706,19 @@ pub fn caution(ui: &mut Ui, t: &Tokens, icons: bool, text: &str, action: Option<
                     ui.label(glyph(icon::WARNING, 16.0).color(t.caution));
                 }
                 ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.spacing_mut().item_spacing.y = 8.0;
                     ui.add(egui::Label::new(caption(text).color(t.text)).wrap());
                     if let Some(a) = action {
-                        let b = egui::Button::new(caption(a).color(t.accent)).frame_when_inactive(false).min_size(Vec2::new(0.0, 24.0));
-                        clicked = ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+                        // A small standard button on the text column: primary
+                        // text on a control fill, so it passes 4.5:1 on the tint.
+                        let b = egui::Button::new(caption(a).color(t.text))
+                            .fill(argb(0x0FFF_FFFF))
+                            .stroke(Stroke::new(1.0, argb(0x24FF_FFFF)))
+                            .corner_radius(CornerRadius::same(R_CONTROL))
+                            .min_size(Vec2::new(0.0, 24.0));
+                        let r = ui.add(b);
+                        focus_ring(ui, t, &r, r.rect, f32::from(R_CONTROL));
+                        clicked = r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
                     }
                 });
             });

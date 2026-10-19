@@ -308,7 +308,7 @@ impl LibraryApp {
         let mut show_clips = false;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
-            theme::setting(ui, t, false, Some(icon::GAME), "Record this game", "Keep a replay buffer while it runs", |ui| {
+            theme::setting(ui, t, false, Some(icon::GAME), "Replay for this game", "Keep the last few minutes while it runs", |ui| {
                 let mut v = enabled;
                 if theme::toggle(ui, t, &mut v).changed() {
                     toggle = Some(v);
@@ -376,7 +376,7 @@ impl LibraryApp {
             let preview = preview.sanitized();
             let buffer = preview.for_game(&g.exe).buffer_bytes();
             let total = preview.recording_memory(&[g.exe.as_str()]);
-            theme::setting(ui, t, false, Some(icon::INFO), "Memory while it records", &format!("{} for its replay buffer, the rest for capture and encoding", theme::fmt_bytes(buffer)), |ui| {
+            theme::setting(ui, t, false, Some(icon::INFO), "Memory while the replay is on", &format!("{} for the replay, the rest for capture and encoding", theme::fmt_bytes(buffer)), |ui| {
                 ui.label(RichText::new(theme::fmt_bytes(total)).color(t.text));
             });
             let (clips, bytes) = self.game_clips(g);
