@@ -173,7 +173,7 @@ impl LibraryApp {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
             let mut first = true;
-            for (title, group) in [("Recording now", &recording), ("Your games", &on), ("Turned off", &off)] {
+            for (title, group) in [("Replay on", &recording), ("Your games", &on), ("Turned off", &off)] {
                 if group.is_empty() {
                     continue;
                 }

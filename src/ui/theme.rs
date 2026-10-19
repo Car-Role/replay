@@ -664,8 +664,9 @@ pub fn tag_chip(ui: &mut Ui, t: &Tokens, tag: &str) -> Response {
 
 /// A suggested tag: transparent with a "+", filled only on hover.
 pub fn idea_chip(ui: &mut Ui, t: &Tokens, tag: &str) -> Response {
-    let galley = ui.painter().layout_no_wrap(format!("+  #{tag}"), FontId::proportional(14.0), t.text2);
-    let (r, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 24.0, 28.0), Sense::click());
+    let plus = ui.painter().layout_no_wrap("+".to_string(), FontId::proportional(14.0), t.text2);
+    let galley = ui.painter().layout_no_wrap(format!("#{tag}"), FontId::proportional(14.0), t.text2);
+    let (r, resp) = ui.allocate_exact_size(Vec2::new(12.0 + plus.size().x + 8.0 + galley.size().x + 12.0, 28.0), Sense::click());
     let hovered = resp.hovered();
     ui.painter().rect(
         r,
@@ -675,7 +676,9 @@ pub fn idea_chip(ui: &mut Ui, t: &Tokens, tag: &str) -> Response {
         egui::StrokeKind::Inside,
     );
     let color = if hovered { t.text } else { t.text2 };
-    ui.painter().galley_with_override_text_color(egui::pos2(r.left() + 12.0, r.center().y - galley.size().y / 2.0), galley, color);
+    let px = plus.size().x;
+    ui.painter().galley_with_override_text_color(egui::pos2(r.left() + 12.0, r.center().y - plus.size().y / 2.0), plus, color);
+    ui.painter().galley_with_override_text_color(egui::pos2(r.left() + 12.0 + px + 8.0, r.center().y - galley.size().y / 2.0), galley, color);
     focus_ring(ui, t, &resp, r, 14.0);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Add tag {tag}")));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)

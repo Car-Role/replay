@@ -17,11 +17,14 @@ pub struct ClipMeta {
     pub favorite: bool,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Horizontal centre (0..1) of the 9:16 crop chosen in the editor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop: Option<f32>,
 }
 
 impl ClipMeta {
     fn is_empty(&self) -> bool {
-        !self.favorite && self.tags.is_empty()
+        !self.favorite && self.tags.is_empty() && self.crop.is_none()
     }
 }
 

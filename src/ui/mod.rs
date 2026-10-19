@@ -344,7 +344,9 @@ impl LibraryApp {
 
     fn open_editor(&mut self, ctx: &egui::Context, path: PathBuf) {
         if self.editor.as_ref().map(|e| e.path() != path).unwrap_or(true) {
-            self.editor = Some(Editor::open(ctx, &path, &self.shared.cfg));
+            let mut ed = Editor::open(ctx, &path, &self.shared.cfg);
+            ed.set_crop(self.lib.get(&path).crop);
+            self.editor = Some(ed);
         }
         self.page = Page::Editor;
     }
@@ -883,6 +885,7 @@ impl LibraryApp {
                 (p.clone(), (tex, clips::friendly_title(p, &game), dur))
             })
             .collect();
+        let discord_mb = self.shared.cfg.share.discord_mb;
         let Some(m) = &mut self.montage else { return };
         let icons = self.shared.icons;
         let result = Self::content_dialog(ctx, t, 560.0, "Make a montage", "Create montage", |ui| {
@@ -933,6 +936,7 @@ impl LibraryApp {
                 None if m.vertical => source_mb * 0.45,
                 None => source_mb,
             };
+            let mb = mb.max(0.0);
             ui.add_space(4.0);
             ui.label(theme::caption(format!("{} clips  \u{00b7}  {} in total  \u{00b7}  about {mb:.0} MB", m.clips.len(), theme::fmt_short(total))).color(t.text2));
             if let Some((a, b)) = swap {
@@ -996,18 +1000,23 @@ impl LibraryApp {
             });
             form_row(ui, t, "Shape", |ui| {
                 let w = ui.available_width();
-                let shapes = [("Landscape", "As recorded"), ("Vertical 9:16", "Keeps the centre of each clip")];
+                let shapes = [("Landscape", "As recorded"), ("Vertical 9:16", "Uses each clip's framing from the editor, or the centre")];
                 if let Some(i) = theme::segmented(ui, t, &shapes, usize::from(m.vertical), w) {
                     m.vertical = i == 1;
                 }
             });
             ui.add_space(4.0);
-            let note = if m.vertical {
-                "Vertical keeps the centre of each clip. Encoding again takes longer."
+            let limit = discord_mb;
+            if m.size_mb.is_none() && mb > f64::from(limit) {
+                ui.label(theme::caption(format!("Too big for Discord ({limit} MB). Pick a Discord size to share it there.")).color(t.caution));
             } else {
-                "Clips with different settings or a size limit are encoded again, which takes longer."
-            };
-            ui.label(theme::caption(note).color(t.text3));
+                let note = if m.vertical {
+                    "Vertical uses each clip's framing from the editor, or the centre. Encoding again takes longer."
+                } else {
+                    "Clips with different settings or a size limit are encoded again, which takes longer."
+                };
+                ui.label(theme::caption(note).color(t.text3));
+            }
         });
         let Some(ok) = result else { return };
         let m = self.montage.take().expect("open");
@@ -1067,7 +1076,7 @@ impl LibraryApp {
     fn open_montage(&mut self) {
         let mut list: Vec<&ClipEntry> = self.clips.iter().filter(|c| self.gallery.checked.contains(&c.path)).collect();
         list.sort_by_key(|c| c.modified);
-        self.montage = Some(Montage { clips: list.iter().map(|c| c.path.clone()).collect(), music: None, music_volume: 60, game_volume: 100, fade_out: true, size_mb: None, vertical: false });
+        self.montage = Some(Montage { clips: list.iter().map(|c| c.path.clone()).collect(), music: None, music_volume: 60, game_volume: 100, fade_out: true, size_mb: Some(self.shared.cfg.share.discord_mb), vertical: false });
     }
 }
 
@@ -1168,6 +1177,11 @@ impl LibraryApp {
             Some(editor::Action::Back) => self.page = Page::Clips,
             Some(editor::Action::Delete(p)) => self.delete_clips(vec![p]),
             Some(editor::Action::Favorite(p, on)) => self.set_favorite(&p, on),
+            Some(editor::Action::SaveCrop(p, c)) => {
+                self.lib = crate::library::Library::load();
+                self.lib.update(&p, |m| m.crop = Some(c));
+                let _ = self.lib.save();
+            }
             Some(editor::Action::Rename(p, name)) => {
                 let ctx = ui.ctx().clone();
                 self.rename(&ctx, &p, &name);

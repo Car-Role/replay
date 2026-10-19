@@ -26,6 +26,8 @@ pub enum Action {
     Delete(PathBuf),
     Favorite(PathBuf, bool),
     Rename(PathBuf, String),
+    /// The 9:16 framing changed; remember it for this clip.
+    SaveCrop(PathBuf, f32),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -233,6 +235,13 @@ impl Editor {
         &self.path
     }
 
+    /// Starts from the framing saved for this clip.
+    pub fn set_crop(&mut self, c: Option<f32>) {
+        if let Some(c) = c {
+            self.crop_center = c.clamp(0.0, 1.0);
+        }
+    }
+
     /// For `--snapshot`: show the vertical export with its crop frame.
     pub fn snapshot_vertical(&mut self) {
         self.vertical = true;
@@ -422,7 +431,9 @@ impl Editor {
         let side = full.width() >= 860.0;
         let preview = if side { Rect::from_min_max(top.min, Pos2::new(top.right() - INSPECTOR_W - 12.0, top.bottom())) } else { top };
         let mut pv = ui.new_child(egui::UiBuilder::new().max_rect(preview));
-        self.preview(&mut pv, &t, icons, preview);
+        if self.preview(&mut pv, &t, icons, preview) {
+            action = Some(Action::SaveCrop(self.path.clone(), self.crop_center));
+        }
         if side {
             let insp = Rect::from_min_max(Pos2::new(preview.right() + 12.0, top.top()), top.max);
             let mut iu = ui.new_child(egui::UiBuilder::new().max_rect(insp).layout(egui::Layout::top_down(egui::Align::Min)));
@@ -481,9 +492,19 @@ impl Editor {
                         let hint = if default_name { "  \u{00b7}  Add a name" } else { "" };
                         if !hint.is_empty() {
                             let at = Pos2::new(r.rect.right() + 2.0, r.rect.center().y);
-                            let hr = ui.painter().text(at, Align2::LEFT_CENTER, hint, FontId::proportional(14.0), t.text3);
-                            let hresp = ui.interact(hr, r.id.with("add-name"), Sense::click());
-                            if hresp.on_hover_cursor(egui::CursorIcon::Text).clicked() {
+                            let g = ui.painter().layout_no_wrap(hint.to_string(), FontId::proportional(14.0), t.text3);
+                            let hr = Rect::from_min_size(Pos2::new(at.x, at.y - g.size().y / 2.0), g.size() + Vec2::new(if icons { 22.0 } else { 0.0 }, 0.0));
+                            let hresp = ui.interact(hr.expand(2.0), r.id.with("add-name"), Sense::click());
+                            let hot = hresp.hovered();
+                            if hot {
+                                ui.painter().rect_filled(hr.expand2(Vec2::new(4.0, 2.0)), CornerRadius::same(theme::R_CONTROL), t.subtle_hover);
+                            }
+                            let color = if hot { t.text } else { t.text3 };
+                            ui.painter().galley_with_override_text_color(hr.min, g, color);
+                            if icons {
+                                ui.painter().text(Pos2::new(hr.right() - 8.0, hr.center().y), Align2::CENTER_CENTER, icon::EDIT, FontId::new(12.0, FontFamily::Name(theme::ICONS.into())), color);
+                            }
+                            if hresp.on_hover_text("Name this clip").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                                 self.name_edit = Some(String::new());
                             }
                         } else if r.hovered() && icons {
@@ -595,7 +616,8 @@ impl Editor {
 
     /// The video, aspect-fit on black. Click to play or pause; in vertical
     /// mode, drag to move the 9:16 crop.
-    fn preview(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, rect: Rect) {
+    fn preview(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, rect: Rect) -> bool {
+        let mut framed = false;
         let resp = ui.allocate_rect(rect, Sense::click_and_drag());
         let p = ui.painter_at(rect);
         p.rect_filled(rect, CornerRadius::same(theme::R_CARD), t.well);
@@ -620,7 +642,9 @@ impl Editor {
                 p.rect_filled(Rect::from_center_size(Pos2::new(x, keep.center().y), Vec2::new(8.0, 24.0)), CornerRadius::same(2), t.accent);
             }
             let tag = p.layout_no_wrap("Drag to frame".to_string(), FontId::proportional(12.0), Color32::WHITE);
-            let tr = Rect::from_center_size(Pos2::new(keep.center().x, keep.top() + 8.0 + (tag.size().y + 4.0) / 2.0), tag.size() + Vec2::new(12.0, 4.0));
+            let above = (keep.top() - rect.top()) > tag.size().y + 12.0;
+            let y = if above { keep.top() - 6.0 - (tag.size().y + 4.0) / 2.0 } else { keep.bottom() + 6.0 + (tag.size().y + 4.0) / 2.0 };
+            let tr = Rect::from_center_size(Pos2::new(keep.center().x, y.min(rect.bottom() - 12.0)), tag.size() + Vec2::new(12.0, 4.0));
             p.rect_filled(tr, CornerRadius::same(theme::R_CONTROL), Color32::from_black_alpha(170));
             p.galley(tr.min + Vec2::new(6.0, 2.0), tag, Color32::WHITE);
             if resp.dragged()
@@ -633,6 +657,7 @@ impl Editor {
             } else if resp.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
             }
+            framed = resp.drag_stopped();
         }
         if resp.clicked() {
             let on = !self.playing;
@@ -647,6 +672,7 @@ impl Editor {
                 draw_play(&p, c, 14.0, Color32::WHITE);
             }
         }
+        framed
     }
 
     /// Timecode on the left, playback controls in the middle, selection on the right.

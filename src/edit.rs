@@ -449,6 +449,7 @@ fn export_encoded(segments: &[Segment], out: &Path, mix: &Mix, spec: &EncodeSpec
     let mut pieces = Vec::new();
     let mut ranges = Vec::new();
     let mut size = None;
+    let lib = spec.vertical.map(|_| crate::library::Library::load());
     for (seg, f) in segments.iter().zip(&files) {
         let v = f.video().ok_or_else(|| format!("{} has no video", seg.path.display()))?;
         let TrackKindIn::Video { width, height, .. } = v.kind else { unreachable!() };
@@ -457,7 +458,10 @@ fn export_encoded(segments: &[Segment], out: &Path, mix: &Mix, spec: &EncodeSpec
         if end - start < 0.05 {
             continue;
         }
-        let (crop, out_size) = plan_frame(width, height, spec);
+        // Vertical: each clip's own framing from the editor, else the given centre.
+        let own = lib.as_ref().and_then(|l| l.get(&seg.path).crop);
+        let seg_spec = EncodeSpec { vertical: spec.vertical.map(|c| own.unwrap_or(c)), ..spec.clone() };
+        let (crop, out_size) = plan_frame(width, height, &seg_spec);
         // The first clip sets the output size; others are fitted into it.
         size.get_or_insert(out_size);
         pieces.push(crate::sys::transcode::Piece { path: seg.path.clone(), start, end, crop });
