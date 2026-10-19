@@ -153,6 +153,19 @@ pub fn run() -> windows::core::Result<()> {
         let icons = Icons::create();
         let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
         tray::add(hwnd, WM_APP_TRAY, icons.idle, "Replay: waiting for a game");
+        // First run: tell the user where Replay lives once its window is closed.
+        let marker = crate::paths::data_dir().join("tray-hint-shown");
+        if !marker.exists() {
+            tray::balloon(
+                hwnd,
+                "Replay is running",
+                "It records in the background from the notification area. Double-click the icon to open your clips.",
+                false,
+                icons.idle,
+            );
+            let _ = std::fs::create_dir_all(crate::paths::data_dir());
+            let _ = std::fs::write(&marker, b"");
+        }
 
         let hook = SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND,

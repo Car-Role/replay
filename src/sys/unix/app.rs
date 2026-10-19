@@ -248,6 +248,12 @@ impl App {
             next_tick: Instant::now() + TICK,
         };
         app.register_hotkeys(true);
+        let marker = crate::paths::data_dir().join("tray-hint-shown");
+        if !marker.exists() {
+            notify("Replay is running", "It records in the background from the menu bar. Open it there to see your clips.");
+            let _ = std::fs::create_dir_all(crate::paths::data_dir());
+            let _ = std::fs::write(&marker, b"");
+        }
         app.rebuild_tray();
         app
     }

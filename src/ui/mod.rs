@@ -704,6 +704,15 @@ impl eframe::App for LibraryApp {
         let ctx = ui.ctx().clone();
         let t = theme::tokens(&ctx);
         self.poll_background(&ctx);
+        // Closing the window leaves Replay in the tray: the recorder keeps
+        // running (it starts now if it was off), and this process exits so
+        // its memory is freed. The tray icon opens the window again.
+        if ctx.input(|i| i.viewport().close_requested())
+            && !crate::sys::shell::recorder_running()
+            && let Ok(exe) = std::env::current_exe()
+        {
+            let _ = std::process::Command::new(exe).spawn();
+        }
 
         egui::Panel::left("nav")
             .exact_size(220.0)
