@@ -6,7 +6,19 @@ use eframe::egui::{self, Color32, RichText};
 use super::Shared;
 use crate::config::{Codec, Config, RateControl, Resolution};
 
+/// What the Updates section shows.
+#[derive(Clone)]
+pub enum UpdateState {
+    Idle,
+    Checking,
+    UpToDate,
+    Ready(String),
+    Available { version: String, page: String, why: String },
+    Failed(String),
+}
+
 pub struct SettingsPage {
+    pub update: UpdateState,
     draft: Config,
     include_text: String,
     exclude_text: String,
@@ -21,6 +33,10 @@ impl SettingsPage {
     pub fn new(cfg: &Config) -> Self {
         let encoders = crate::sys::available_codecs();
         Self {
+            update: match crate::update::staged() {
+                Some(s) => UpdateState::Ready(s.version),
+                None => UpdateState::Idle,
+            },
             draft: cfg.clone(),
             include_text: cfg.detection.include.join("\n"),
             exclude_text: cfg.detection.exclude.join("\n"),
@@ -221,6 +237,58 @@ impl SettingsPage {
                 ui.end_row();
             });
 
+            Self::section(ui, "Updates", |ui| {
+                ui.label("Automatic");
+                ui.checkbox(&mut d.updates.auto_check, "Check for a new version once a day and download it in the background");
+                ui.end_row();
+                ui.label("Version");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!("{} ({})", crate::update::CURRENT, crate::sys::PLATFORM));
+                    match self.update.clone() {
+                        UpdateState::Checking => {
+                            ui.spinner();
+                            ui.label("Checking...");
+                        }
+                        UpdateState::Ready(v) => {
+                            ui.label(RichText::new(format!("Version {v} is downloaded.")).color(Color32::from_rgb(0x4c, 0xaf, 0x50)));
+                            if ui.button("Restart to update").clicked() {
+                                restart_to_update(ui.ctx(), shared);
+                            }
+                        }
+                        UpdateState::Available { version, page, why } => {
+                            ui.label(format!("Version {version} is available. {why}"));
+                            if ui.button("Open the download page").clicked() {
+                                crate::sys::shell::open_url(&page);
+                            }
+                        }
+                        state => {
+                            if let UpdateState::UpToDate = state {
+                                ui.label(RichText::new("You have the latest version.").weak());
+                            }
+                            if let UpdateState::Failed(e) = &state {
+                                ui.label(RichText::new(e).color(Color32::from_rgb(0xef, 0x53, 0x50)));
+                            }
+                            if ui.button("Check for updates").clicked() {
+                                self.update = UpdateState::Checking;
+                                shared.spawn_job(ui.ctx(), super::JobKind::Update, "Checking for updates".into(), |p| {
+                                    let r = (|| -> Result<UpdateState, String> {
+                                        let Some(rel) = crate::update::check()? else { return Ok(UpdateState::UpToDate) };
+                                        if let Err(why) = crate::update::can_self_update() {
+                                            return Ok(UpdateState::Available { version: rel.version, page: rel.page, why });
+                                        }
+                                        let s = crate::update::download(&rel, &|a, b| p(a as f32 / b.max(1) as f32))?;
+                                        crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::UpdateStaged);
+                                        Ok(UpdateState::Ready(s.version))
+                                    })();
+                                    super::JobDone::Update(r.unwrap_or_else(UpdateState::Failed))
+                                });
+                            }
+                        }
+                    }
+                });
+                ui.end_row();
+            });
+
             Self::section(ui, "General", |ui| {
                 ui.label("Notifications");
                 ui.checkbox(&mut d.notify, "Show a message when a replay is saved");
@@ -291,7 +359,7 @@ impl SettingsPage {
                 shared.cfg = new.clone();
                 self.draft = new;
                 self.password.clear();
-                crate::sys::shell::notify_recorder_reload();
+                crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::Reload);
                 shared.toast("Settings saved.", false);
                 folder_changed
             }
@@ -300,5 +368,22 @@ impl SettingsPage {
                 false
             }
         }
+    }
+}
+
+/// Installs the downloaded update. The recorder restarts itself when it
+/// runs; otherwise this window does it. Either way this window closes.
+fn restart_to_update(ctx: &egui::Context, shared: &mut Shared) {
+    if crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::InstallUpdate) {
+        // The recorder installs the update and starts again; reopen from the tray.
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        return;
+    }
+    match crate::update::staged() {
+        Some(s) => match crate::update::apply_and_restart(&s, &["--library"]) {
+            Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Err(e) => shared.toast(format!("Update failed: {e}"), true),
+        },
+        None => shared.toast("The downloaded update is missing. Check again.", true),
     }
 }

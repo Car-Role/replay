@@ -4,6 +4,7 @@ mod clip;
 mod config;
 mod edit;
 mod hotkey;
+mod ipc;
 mod logger;
 mod media;
 mod mux;
@@ -20,7 +21,14 @@ mod util;
 use sys::windows::{app, audio, capture, detect, encoder, gpu, session, tray, verify};
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // A new version started by the updater waits for the old one to exit.
+    if args.first().map(String::as_str) == Some("--after-update") {
+        if let Some(pid) = args.get(1).and_then(|p| p.parse().ok()) {
+            update::wait_for_exit(pid);
+        }
+        args.drain(..args.len().min(2));
+    }
     let mode = args.first().map(String::as_str).unwrap_or("");
     let text_mode = mode.starts_with("--") && !matches!(mode, "--library" | "--settings" | "--save" | "--save-all");
     sys::cli::prepare(text_mode);

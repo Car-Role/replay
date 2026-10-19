@@ -1,0 +1,9 @@
+[package]
+name = "sign"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Creates the release signing key and signs SHA256SUMS.txt (minisign format)"
+
+[dependencies]
+minisign = "0.10"

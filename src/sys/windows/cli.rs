@@ -74,12 +74,7 @@ pub fn handle(mode: &str, args: &[String]) -> bool {
 
 /// Asks the running recorder to save. Returns false when none runs.
 pub fn send_save(all: bool) -> bool {
-    unsafe {
-        match FindWindowW(app::WINDOW_CLASS, None) {
-            Ok(h) => PostMessageW(Some(h), app::WM_APP_SAVE, WPARAM(usize::from(all)), LPARAM(0)).is_ok(),
-            Err(_) => false,
-        }
-    }
+    super::shell::send_to_recorder(crate::ipc::RecorderMsg::Save(all))
 }
 
 /// The tray recorder (default mode).

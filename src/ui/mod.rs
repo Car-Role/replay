@@ -54,6 +54,7 @@ pub struct ClipEntry {
 pub enum JobKind {
     Export,
     Upload,
+    Update,
 }
 
 pub struct Job {
@@ -66,6 +67,7 @@ pub struct Job {
 pub enum JobDone {
     Exported(PathBuf),
     Uploaded(PathBuf, String),
+    Update(settings::UpdateState),
     Failed(String),
 }
 
@@ -282,6 +284,12 @@ impl LibraryApp {
                     let msg = if copied { "Uploaded. Link copied." } else { "Uploaded." };
                     self.shared.toast_link(msg, url);
                 }
+                JobDone::Update(state) => {
+                    if let settings::UpdateState::Ready(v) = &state {
+                        self.shared.toast(format!("Replay {v} is downloaded. Restart to update (Settings > Updates)."), false);
+                    }
+                    self.settings.update = state;
+                }
                 JobDone::Failed(e) => self.shared.toast(e, true),
             }
         }
@@ -446,7 +454,7 @@ impl LibraryApp {
         ui.horizontal(|ui| {
             for j in &self.shared.jobs {
                 let p = j.progress.lock().map(|p| *p).unwrap_or(0.0);
-                let _ = matches!(j.kind, JobKind::Export | JobKind::Upload);
+                let _ = matches!(j.kind, JobKind::Export | JobKind::Upload | JobKind::Update);
                 ui.label(&j.label);
                 ui.add(egui::ProgressBar::new(p).desired_width(160.0).show_percentage());
             }

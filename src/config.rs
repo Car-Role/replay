@@ -201,6 +201,19 @@ impl Default for ShareConfig {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
+pub struct UpdateConfig {
+    /// Check GitHub for a new release once a day and download it in the background.
+    pub auto_check: bool,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self { auto_check: true }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
 pub struct Config {
     pub output_dir: PathBuf,
     pub replay_seconds: u32,
@@ -212,6 +225,7 @@ pub struct Config {
     pub hotkeys: HotkeyConfig,
     pub detection: DetectionConfig,
     pub share: ShareConfig,
+    pub updates: UpdateConfig,
 }
 
 impl Default for Config {
@@ -227,6 +241,7 @@ impl Default for Config {
             hotkeys: HotkeyConfig::default(),
             detection: DetectionConfig::default(),
             share: ShareConfig::default(),
+            updates: UpdateConfig::default(),
         }
     }
 }

@@ -39,6 +39,19 @@ pub const WM_APP_UPLOAD_DONE: u32 = WM_APP + 5;
 pub const WM_APP_SHOW: u32 = WM_APP + 6;
 /// Sent by `replay --save` (wParam 0) or `replay --save-all` (wParam 1).
 pub const WM_APP_SAVE: u32 = WM_APP + 7;
+/// Result of a background update check (lParam: Box<UpdateResult>).
+pub const WM_APP_UPDATE_RESULT: u32 = WM_APP + 8;
+/// The library window downloaded an update.
+pub const WM_APP_UPDATE_STAGED: u32 = WM_APP + 9;
+/// The library window asks to install the staged update now.
+pub const WM_APP_INSTALL_UPDATE: u32 = WM_APP + 10;
+
+/// Ok(None): up to date. Ok(Some(Ok(v))): v is downloaded and verified.
+/// Ok(Some(Err((v, page, why)))): v exists but cannot be installed here.
+type UpdateResult = Result<Option<Result<String, (String, String, String)>>, String>;
+
+const UPDATE_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+const FIRST_UPDATE_CHECK: Duration = Duration::from_secs(60);
 
 const TIMER_TICK: usize = 1;
 const TICK_MS: u32 = 2000;
@@ -55,6 +68,8 @@ const CMD_PAUSE: usize = 102;
 const CMD_FOLDER: usize = 103;
 const CMD_LIBRARY: usize = 104;
 const CMD_EXIT: usize = 105;
+const CMD_UPDATE: usize = 106;
+const CMD_RELEASE_PAGE: usize = 107;
 const CMD_STOP_BASE: usize = 200;
 
 struct Mic {
@@ -92,6 +107,12 @@ struct App {
     last_checked: Option<(isize, windows::Win32::Foundation::RECT)>,
     /// Hotkeys another program held at the last attempt; retried on the timer.
     hotkeys_missing: bool,
+    next_update_check: Instant,
+    update_checking: bool,
+    /// Version downloaded and verified, ready to install.
+    update_ready: Option<String>,
+    /// A newer version this copy cannot install itself: (version, page).
+    update_notice: Option<(String, String)>,
 }
 
 thread_local! {
@@ -161,6 +182,10 @@ pub fn run() -> windows::core::Result<()> {
             hook,
             last_checked: None,
             hotkeys_missing: false,
+            next_update_check: Instant::now() + FIRST_UPDATE_CHECK,
+            update_checking: false,
+            update_ready: crate::update::staged().map(|s| s.version),
+            update_notice: None,
         };
         APP.with(|a| *a.borrow_mut() = Some(app));
         with_app(|a| {
@@ -253,6 +278,26 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             with_app(|a| if wparam.0 == 1 { a.save_all() } else { a.save_focused() });
             LRESULT(0)
         }
+        WM_APP_UPDATE_RESULT => {
+            let r = unsafe { *Box::from_raw(lparam.0 as *mut UpdateResult) };
+            with_app(|a| a.on_update_result(r));
+            LRESULT(0)
+        }
+        WM_APP_UPDATE_STAGED => {
+            with_app(|a| {
+                a.update_ready = crate::update::staged().map(|s| s.version);
+                a.update_tray();
+            });
+            LRESULT(0)
+        }
+        WM_APP_INSTALL_UPDATE => {
+            if with_app(App::install_update) == Some(true) {
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+            }
+            LRESULT(0)
+        }
         WM_DESTROY => {
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
@@ -315,6 +360,13 @@ fn show_menu(hwnd: HWND) {
     match cmd {
         0 => {}
         CMD_LIBRARY => open_library(),
+        CMD_UPDATE => {
+            if with_app(App::install_update) == Some(true) {
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+            }
+        }
         CMD_EXIT => unsafe {
             let _ = DestroyWindow(hwnd);
         },
@@ -506,6 +558,10 @@ impl App {
         if self.hotkeys_missing {
             self.register_hotkeys(false);
         }
+        if self.cfg.updates.auto_check && !self.update_checking && Instant::now() >= self.next_update_check {
+            self.next_update_check = Instant::now() + UPDATE_EVERY;
+            self.start_update_check();
+        }
         // Stop sessions whose window is gone (the capture item may not report it).
         for s in self.sessions.iter_mut().filter(|s| s.is_running()) {
             if !unsafe { IsWindow(Some(HWND(s.game.hwnd as _))) }.as_bool() {
@@ -669,6 +725,77 @@ impl App {
         }
     }
 
+    /// Checks GitHub, and downloads and verifies a newer release in the background.
+    fn start_update_check(&mut self) {
+        if self.update_ready.is_some() {
+            return;
+        }
+        self.update_checking = true;
+        let hwnd = self.hwnd.0 as isize;
+        std::thread::Builder::new()
+            .name("update".into())
+            .spawn(move || {
+                crate::util::set_thread("replay update", windows::Win32::System::Threading::THREAD_PRIORITY_BELOW_NORMAL);
+                let r: UpdateResult = (|| {
+                    let Some(rel) = crate::update::check()? else { return Ok(None) };
+                    match crate::update::can_self_update() {
+                        Ok(()) => crate::update::download(&rel, &|_, _| {}).map(|s| Some(Ok(s.version))),
+                        Err(why) => Ok(Some(Err((rel.version, rel.page, why)))),
+                    }
+                })();
+                post(hwnd, WM_APP_UPDATE_RESULT, 0, r);
+            })
+            .ok();
+    }
+
+    fn on_update_result(&mut self, r: UpdateResult) {
+        self.update_checking = false;
+        match r {
+            Ok(Some(Ok(v))) => {
+                tray::balloon(
+                    self.hwnd,
+                    &format!("Replay {v} is ready"),
+                    "Right-click the Replay icon and choose \"Restart to update\".",
+                    false,
+                    self.icons.idle,
+                );
+                self.update_ready = Some(v);
+            }
+            Ok(Some(Err((v, page, why)))) => {
+                if self.update_notice.as_ref().map(|n| &n.0) != Some(&v) {
+                    tray::balloon(self.hwnd, &format!("Replay {v} is available"), &why, false, self.icons.idle);
+                }
+                self.update_notice = Some((v, page));
+            }
+            Ok(None) => log::debug!("Replay is up to date"),
+            Err(e) => log::warn!("update check failed: {e}"),
+        }
+        self.update_tray();
+    }
+
+    /// Installs the staged update and starts the new version.
+    /// Returns true when this process must now exit.
+    fn install_update(&mut self) -> bool {
+        let Some(staged) = crate::update::staged() else {
+            tray::balloon(self.hwnd, "Replay", "No downloaded update was found.", true, self.icons.idle);
+            return false;
+        };
+        for s in &mut self.sessions {
+            s.stop();
+        }
+        if let Some(mut m) = self.mic.take() {
+            m.stop();
+        }
+        match crate::update::apply_and_restart(&staged, &[]) {
+            Ok(()) => true,
+            Err(e) => {
+                log::error!("update failed: {e}");
+                tray::balloon(self.hwnd, "Replay: update failed", &e, true, self.icons.idle);
+                false
+            }
+        }
+    }
+
     fn on_upload_done(&mut self, r: Result<String, String>) {
         match r {
             Ok(url) => {
@@ -775,6 +902,11 @@ impl App {
             add(MF_STRING, CMD_FOLDER, "Open clips folder");
             add(MF_STRING | MF_DEFAULT, CMD_LIBRARY, "Clips, editor and settings...");
             let _ = AppendMenuW(m, MF_SEPARATOR, 0, None);
+            if let Some(v) = &self.update_ready {
+                add(MF_STRING, CMD_UPDATE, &format!("Restart to update to {v}"));
+            } else if let Some((v, _)) = &self.update_notice {
+                add(MF_STRING, CMD_RELEASE_PAGE, &format!("Replay {v} is available..."));
+            }
             add(MF_STRING, CMD_EXIT, "Exit");
             m
         }
@@ -800,6 +932,11 @@ impl App {
                 let p = crate::util::wide(&self.cfg.output_dir.to_string_lossy());
                 unsafe {
                     ShellExecuteW(None, w!("open"), PCWSTR(p.as_ptr()), None, None, SW_SHOWNORMAL);
+                }
+            }
+            CMD_RELEASE_PAGE => {
+                if let Some((_, page)) = &self.update_notice {
+                    crate::sys::shell::open_url(page);
                 }
             }
             c if c >= CMD_STOP_BASE => {

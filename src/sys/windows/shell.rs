@@ -139,18 +139,36 @@ pub fn recorder_running() -> bool {
     unsafe { windows::Win32::UI::WindowsAndMessaging::FindWindowW(crate::app::WINDOW_CLASS, None).is_ok() }
 }
 
-/// Tells the running recorder to reload its settings.
-pub fn notify_recorder_reload() {
-    notify_recorder(crate::app::WM_APP_RELOAD);
-}
-
-pub fn notify_recorder(msg: u32) {
+/// Sends a message to the running recorder. False when it is not running.
+pub fn send_to_recorder(msg: crate::ipc::RecorderMsg) -> bool {
+    use crate::ipc::RecorderMsg;
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+    let (id, wparam) = match msg {
+        RecorderMsg::Reload => (crate::app::WM_APP_RELOAD, 0),
+        RecorderMsg::UpdateStaged => (crate::app::WM_APP_UPDATE_STAGED, 0),
+        RecorderMsg::InstallUpdate => (crate::app::WM_APP_INSTALL_UPDATE, 0),
+        RecorderMsg::Save(all) => (crate::app::WM_APP_SAVE, usize::from(all)),
+        RecorderMsg::Show => (crate::app::WM_APP_SHOW, 0),
+    };
     unsafe {
-        if let Ok(h) = FindWindowW(crate::app::WINDOW_CLASS, None) {
-            let _ = PostMessageW(Some(h), msg, WPARAM(0), LPARAM(0));
+        match FindWindowW(crate::app::WINDOW_CLASS, None) {
+            Ok(h) => PostMessageW(Some(h), id, WPARAM(wparam), LPARAM(0)).is_ok(),
+            Err(_) => false,
         }
+    }
+}
+
+/// Opens a web page in the default browser.
+pub fn open_url(url: &str) {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    if !url.starts_with("https://") {
+        return;
+    }
+    let u = crate::util::wide(url);
+    unsafe {
+        ShellExecuteW(None, w!("open"), PCWSTR(u.as_ptr()), None, None, SW_SHOWNORMAL);
     }
 }
 
