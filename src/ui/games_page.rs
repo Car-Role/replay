@@ -16,7 +16,7 @@ enum RowAction {
 }
 
 const FPS_CHOICES: [u32; 5] = [30, 60, 120, 144, 240];
-const MBPS_CHOICES: [u32; 9] = [10, 15, 20, 25, 35, 50, 75, 100, 150];
+const KBPS_CHOICES: [u32; 14] = [1_000, 2_000, 3_000, 4_000, 6_000, 8_000, 10_000, 15_000, 20_000, 25_000, 35_000, 50_000, 75_000, 150_000];
 const LENGTH_CHOICES: [u32; 8] = [30, 60, 120, 180, 300, 600, 900, 1200];
 
 fn when(secs: u64) -> String {
@@ -271,13 +271,13 @@ impl LibraryApp {
 
             ui.label(RichText::new("Quality").color(t.text));
             let label = |v: Option<u32>| match v {
-                Some(k) => format!("{} Mbit/s", k / 1000),
-                None => format!("Same as general ({} Mbit/s)", general.video.bitrate_kbps / 1000),
+                Some(k) => theme::fmt_mbps(k),
+                None => format!("Same as general ({})", theme::fmt_mbps(general.video.bitrate_kbps)),
             };
             egui::ComboBox::from_id_salt(("g-br", exe)).width(240.0).selected_text(label(s.bitrate_kbps)).show_ui(ui, |ui| {
                 ui.selectable_value(&mut s.bitrate_kbps, None, label(None));
-                for m in MBPS_CHOICES {
-                    ui.selectable_value(&mut s.bitrate_kbps, Some(m * 1000), label(Some(m * 1000)));
+                for k in KBPS_CHOICES {
+                    ui.selectable_value(&mut s.bitrate_kbps, Some(k), label(Some(k)));
                 }
             });
             ui.end_row();

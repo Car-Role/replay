@@ -1,137 +1,119 @@
+<div align="center">
+
+<img src="assets/generated/png/icon_128.png" width="96" alt="">
+
 # Replay
 
-Instant replay for Windows games, in the style of NVIDIA ShadowPlay, written in Rust.
-Replay keeps the last minutes of every running game in memory. Press a hotkey and it saves a clip.
-It finds games by itself and can record several games at the same time.
+**Instant replay for Windows games. Save the play after it happens.**
 
-> **Status:** Windows works today; build it from source (see below). macOS and Linux
-> support is in progress and not usable yet. Ready-made downloads come with the first release.
+[![Release](https://img.shields.io/github/v/release/Car-Role/replay?label=download)](https://github.com/Car-Role/replay/releases/latest)
+[![CI](https://github.com/Car-Role/replay/actions/workflows/ci.yml/badge.svg)](https://github.com/Car-Role/replay/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+[Download](https://car-role.github.io/replay/) · [Releases](https://github.com/Car-Role/replay/releases) · [Report a problem](https://github.com/Car-Role/replay/issues)
+
+</div>
+
+Replay keeps the last minutes of every game in memory, encoded by your GPU. Press <kbd>Alt</kbd>+<kbd>F10</kbd> and the clip is saved. It finds games by itself, records several at once, and costs almost nothing while you play.
 
 ## Features
 
-- **Hardware encoding on the GPU.** Frames go from the game window to NVENC without passing through the CPU.
-  AV1 (default), HEVC and H.264 are supported. NVIDIA is preferred; AMD and Intel encoders also work.
-- **One buffer per game.** `Alt+F10` saves the game in front. `Alt+Shift+F10` saves all games.
-- **Automatic game detection.** Detection uses game launchers (Steam, Epic, Jagex, Battle.net, Riot, EA,
-  GOG, Ubisoft and others), game library folders, the Windows Game Bar game list, a list of known games,
-  and fullscreen 3D apps. `Ctrl+Alt+F10` marks or unmarks the app in front as a game.
-- **Separate audio tracks.** Game audio comes from that game's process only, so Discord and music are
-  not recorded. The microphone has its own track. Track 1 is a mix of both, for players that only play
-  one track.
-- **Windowed games** are cropped to the game area (no title bar).
-- **Full sessions too.** `Alt+F9` starts and stops a recording of the whole session. It is written to
-  disk as it goes, so it can run for hours with no extra memory.
-- **Per-game settings.** Each game can have its own frame rate, resolution, quality and replay length.
-- **In-game notice.** A small card in a corner of the game confirms each save. It never shows in clips.
-- **Webcam** in a corner of recordings (optional). The camera is on only while a game records.
-- **HDR games** are converted to normal colors on the GPU, so clips do not look washed out.
-- **Library window** with favorites, tags, rename, sort, filters and storage limits.
-- **Editor**: trim with a scrubbing filmstrip, join, audio remix, exact-frame cuts, exports that fit a
-  size limit (Discord 10 MB, 50 MB, 500 MB or your own), vertical 9:16 exports for Shorts and TikTok,
-  and montages with music.
-- **Sharing.** Copy the file to the clipboard (paste it into Discord), upload to Streamable, Catbox,
-  Litterbox or any ShareX custom uploader, copy the link, or upload every saved clip on its own.
-- **Fast-start MP4.** Clips play in web players while they download.
+**Record**
+- Hardware encoding (NVENC, AMD, Intel) in AV1, HEVC or H.264, up to 240 fps
+- Automatic game detection: launchers, game folders, Game Bar list and fullscreen apps
+- One buffer per game; save the game in front or all of them
+- Full session recording that streams to disk
+- Game audio only (no Discord or music), mic on its own track, plus a mix
+- Per-game quality, webcam overlay, HDR to SDR conversion, in-game "saved" notice
 
-## Resource use
+**Edit and share**
+- Trim with a scrubbing filmstrip, join, and remix game and mic volume
+- Exact-frame cuts, exports that fit Discord (10, 50 or 500 MB), vertical 9:16 for Shorts
+- Montages with music
+- Favorites, tags, sorting and storage limits
+- Copy to clipboard, or upload to Streamable, Catbox, Litterbox or any ShareX uploader
 
-Measured on a current 8-core desktop with an NVIDIA RTX GPU, release build, AV1 1080p60 at 25 Mbit/s:
+## Install
 
-| State | CPU | Memory |
+Get **Replay-Setup-windows-x64.exe** from the [download page](https://car-role.github.io/replay/). It needs no admin rights. Updates download in the background and are checked against a signature before they install.
+
+Requires Windows 10 (2004) or 11 and a GPU with a hardware video encoder. AV1 needs an NVIDIA RTX 40, AMD RX 7000 or Intel Arc GPU, or newer.
+
+## Hotkeys
+
+| Keys | Action |
+|---|---|
+| <kbd>Alt</kbd>+<kbd>F10</kbd> | Save a replay of the game in front |
+| <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>F10</kbd> | Save every game |
+| <kbd>Alt</kbd>+<kbd>F9</kbd> | Start or stop a session recording |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>F10</kbd> | Mark or unmark the app in front as a game |
+
+The NVIDIA app also uses <kbd>Alt</kbd>+<kbd>F10</kbd>. Turn off its Instant Replay, or change the keys in Settings.
+
+## Performance
+
+RTX GPU, AV1 1080p60 at 25 Mbit/s, release build:
+
+| | CPU | Memory |
 |---|---|---|
-| Idle (no game) | 0.0 ms over 30 s | 2.7 MB private |
-| Recording one game, with game audio and mic | about 4 to 6% of one core (about 0.3% of the whole CPU) | about 115 MB, plus the buffer |
-| Saving a 2-minute clip | about 0.3 s on a below-normal thread | the clip shares memory with the buffer |
+| No game running | 0 | 3 MB |
+| Recording, with game audio and mic | ~5% of one core | ~115 MB + buffer |
+| Saving a 2-minute clip | 0.3 s | shared with the buffer |
 
-The buffer holds compressed video only, so it needs about `bitrate × length`. For example, 25 Mbit/s for 120 s
-is about 375 MB for each game. The GPU device is released when no game runs.
-
-## Requirements
-
-- Windows 10 version 2004 or later (Windows 11 recommended). Process-loopback audio needs 2004.
-- A GPU with a hardware encoder. AV1 needs an RTX 40 series or newer.
-- To build: Rust 1.88 or later and the MSVC build tools.
+The buffer holds compressed video only: 25 Mbit/s for 2 minutes is about 375 MB per game.
 
 ## Build
 
 ```bash
 cargo build --release
+cargo test
 ```
 
-The program is `target\release\replay.exe`.
+Needs Rust 1.88+ and the MSVC build tools. The program is `target\release\replay.exe`.
 
-If linking fails with `LNK1104: cannot open file 'msvcrt.lib'`, Rust found a Visual Studio install
-without the C++ libraries. Build from a "x64 Native Tools" prompt, or run `vcvars64.bat` from a complete
-install first.
+<details>
+<summary>Command line</summary>
 
-Run the tests:
-
-```bash
-cargo test --release
-```
-
-## Use
-
-1. Start `replay.exe`. A gray dot appears in the notification area. It turns red while a game records.
-2. Play a game. Press `Alt+F10` to save the last 2 minutes.
-3. Click the notification, or double-click the tray icon, to open the library.
-
-**Hotkey conflict with the NVIDIA app:** the NVIDIA app uses `Alt+F10` for its own Instant Replay.
-Turn Instant Replay off in the NVIDIA app (`Alt+Z` > Settings), or choose other keys in Replay's settings.
-Replay takes the keys as soon as they are free; you do not need to restart it.
-
-Clips go to `Videos\Replay\<Game>\`. Settings are in `%APPDATA%\Replay\config.toml`.
-Logs are in `%LOCALAPPDATA%\Replay\`.
-
-### Command line
-
-| Command | What it does |
+| Command | Action |
 |---|---|
-| `replay` | Starts the tray recorder. A second start opens the library. |
-| `replay --library [clip]` | Opens the library, optionally with a clip selected. |
-| `replay --settings` | Opens the library on the Settings tab. |
-| `replay --save` / `--save-all` | Asks the running recorder to save (for Stream Deck or macro keys). |
-| `replay --record` | Starts or stops a full session recording of the game in front. |
-| `replay --detect` | Lists open windows and shows which ones count as games, and why. |
-| `replay --probe` | Shows the GPU, encoders and microphones. |
-| `replay --selftest [s] [av1\|hevc\|h264]` | Records the main monitor, saves a clip and checks that it decodes. |
-| `replay --verify <file>` | Reads a clip back through Media Foundation and reports each track. |
-| `replay --trim <file> <start> <end>` | Saves a trimmed copy. |
-| `replay --join <file> <file>... [--music <file>]` | Joins clips, with optional music under them. |
-| `replay --export <file> <start> <end> [--size MB] [--vertical 0..1] [--codec h264]` | Re-encodes a part of a clip: exact cut, size target, vertical crop. |
-| `replay --check-update [--as-version x.y.z]` | Downloads and verifies the newest release without installing it. |
+| `replay` | Start the recorder (a second start opens the library) |
+| `replay --library [clip]` | Open the library |
+| `replay --save` / `--save-all` / `--record` | Control the running recorder (Stream Deck, macros) |
+| `replay --trim <file> <a> <b>` | Fast trim |
+| `replay --join <files>... [--music <file>]` | Join clips |
+| `replay --export <file> <a> <b> [--size MB] [--vertical 0..1] [--codec h264]` | Re-encode: exact cut, size target, vertical crop |
+| `replay --detect` / `--probe` | Show detected games / GPU, encoders and devices |
+| `replay --selftest [s] [--webcam] [--hdr]` | Record the screen and check the result |
+| `replay --verify <file>` | Decode a clip and report each track |
+| `replay --check-update` | Download and verify the newest release |
 
-## How it works
+</details>
+
+<details>
+<summary>How it works</summary>
 
 ```
-game window --WGC--> BGRA texture --D3D11 video processor--> NV12 texture --NVENC (MFT)--> packet ring
-game process --WASAPI process loopback--> PCM --AAC--> packet ring
-microphone   --WASAPI capture-----------> PCM --AAC--> packet ring
-hotkey --> snapshot of the rings (no copy) --> MP4 writer (moov first) --> Videos\Replay\<Game>\
+game window ─WGC─▶ texture ─D3D11 video processor─▶ NV12 ─NVENC─▶ packet ring
+game process ─WASAPI loopback─▶ AAC ─▶ packet ring
+microphone ─WASAPI─▶ AAC ─▶ packet ring
+hotkey ─▶ snapshot of the rings (no copy) ─▶ MP4 writer ─▶ Videos\Replay\<Game>\
 ```
 
-- `capture.rs`: Windows.Graphics.Capture. `MinUpdateInterval` limits frames to about the target rate.
-- `gpu.rs`: D3D11 device on the NVIDIA adapter, and the GPU color converter and scaler.
-- `encoder.rs`: the hardware encoder through Media Foundation in async mode. Keyframes come every 0.5 s.
-- `audio.rs`: WASAPI capture, AAC encode and decode, and a timeline that fills gaps with silence.
-- `ring.rs`: the packet ring. It drops whole GOPs, so every snapshot starts on a keyframe.
-- `mux/`: Annex B and AV1 OBU handling, the MP4 writer and the MP4 reader.
-- `detect.rs`: game detection. `app.rs`: the tray process. `session.rs`: one recording per game.
-- `edit.rs`, `player.rs`, `ui/`: the library window. It is a separate process that exits when closed,
-  so the recorder never loads UI code.
+Frames never leave the GPU. The ring drops whole GOPs, so every snapshot starts on a keyframe. The library is a separate process, so the recorder never loads UI code. Settings live in `%APPDATA%\Replay\config.toml`, logs in `%LOCALAPPDATA%\Replay\`.
 
-## Known limits
+</details>
 
-- NVIDIA does not offer a public API for ShadowPlay itself. Replay uses the same parts that ShadowPlay
-  uses (desktop capture and NVENC), through public Windows APIs.
-- A few games in true exclusive fullscreen give no window frames. Replay then records their monitor instead.
-- HDR games are saved in SDR (converted on the GPU). The conversion has been tested on an SDR monitor
-  only so far.
-- Fast trims and joins start on the keyframe at or before the chosen point (within 0.5 s). Turn on
-  "Exact cut" to encode the video again and cut on the exact frame.
-- The in-game notice shows over borderless and windowed games. Some games in true exclusive fullscreen
-  hide it.
-- A session recording that is cut off by a crash or power loss cannot be played (the index is written
-  at the end).
-- The uploads to Streamable, Catbox, Litterbox and custom uploaders have not been tested against the live
-  services yet.
+<details>
+<summary>Known limits</summary>
+
+- Some games in exclusive fullscreen give no window frames; Replay records their monitor instead, and may hide the in-game notice.
+- Fast trims start on the keyframe before the cut (within 0.5 s); turn on **Exact cut** for frame accuracy.
+- A session recording cut off by a crash cannot be played (its index is written at the end).
+- HDR conversion and the upload services have not been tested on real HDR displays or live accounts yet.
+- macOS and Linux versions are paused.
+
+</details>
+
+## License
+
+MIT

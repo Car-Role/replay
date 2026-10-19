@@ -464,7 +464,7 @@ impl Config {
     pub fn sanitized(mut self) -> Self {
         self.replay_seconds = self.replay_seconds.clamp(5, 30 * 60);
         self.video.fps = self.video.fps.clamp(10, 240);
-        self.video.bitrate_kbps = self.video.bitrate_kbps.clamp(1_000, 200_000);
+        self.video.bitrate_kbps = self.video.bitrate_kbps.clamp(500, 200_000);
         self.audio.bitrate_kbps = match self.audio.bitrate_kbps {
             0..=111 => 96,
             112..=143 => 128,
@@ -477,7 +477,7 @@ impl Config {
         let mut games = BTreeMap::new();
         for (exe, mut g) in std::mem::take(&mut self.games) {
             g.fps = g.fps.map(|v| v.clamp(10, 240));
-            g.bitrate_kbps = g.bitrate_kbps.map(|v| v.clamp(1_000, 200_000));
+            g.bitrate_kbps = g.bitrate_kbps.map(|v| v.clamp(500, 200_000));
             g.replay_seconds = g.replay_seconds.map(|v| v.clamp(5, 30 * 60));
             let exe = exe.trim().to_ascii_lowercase();
             if !g.is_empty() && !exe.is_empty() {

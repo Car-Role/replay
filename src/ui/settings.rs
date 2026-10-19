@@ -163,11 +163,13 @@ impl SettingsPage {
         });
         let mb = (u64::from(d.video.bitrate_kbps + 2 * d.audio.bitrate_kbps) * 1000 / 8) * u64::from(d.replay_seconds + 2) / 1_000_000;
         theme::setting(ui, t, icons, None, "Quality", &format!("Higher is sharper. About {mb} MB of memory per game being recorded"), |ui| {
-            let mut mbps = d.video.bitrate_kbps / 1000;
-            ui.label(RichText::new(format!("{mbps} Mbit/s")).color(t.text2));
+            ui.label(RichText::new(theme::fmt_mbps(d.video.bitrate_kbps)).color(t.text2));
             ui.spacing_mut().slider_width = 220.0;
-            if ui.add(egui::Slider::new(&mut mbps, 5..=150).show_value(false)).changed() {
-                d.video.bitrate_kbps = mbps * 1000;
+            let mut kbps = d.video.bitrate_kbps;
+            if ui.add(egui::Slider::new(&mut kbps, 500..=150_000).logarithmic(true).show_value(false)).changed() {
+                // Fine steps for low bitrates, whole Mbit/s above 10.
+                let step = if kbps < 10_000 { 100 } else { 1000 };
+                d.video.bitrate_kbps = ((kbps + step / 2) / step * step).max(500);
             }
         });
         theme::setting(ui, t, icons, None, "Rate control", "Variable gives better quality for the same size", |ui| {

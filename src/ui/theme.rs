@@ -510,6 +510,12 @@ pub fn fmt_time(s: f64) -> String {
     format!("{m}:{sec:05.2}")
 }
 
+/// A bitrate for people: "0.8 Mbit/s", "4.5 Mbit/s", "25 Mbit/s".
+pub fn fmt_mbps(kbps: u32) -> String {
+    let m = f64::from(kbps) / 1000.0;
+    if m < 10.0 && kbps % 1000 != 0 { format!("{m:.1} Mbit/s") } else { format!("{m:.0} Mbit/s") }
+}
+
 pub fn fmt_short(s: f64) -> String {
     let s = s.max(0.0).round() as u64;
     format!("{}:{:02}", s / 60, s % 60)
