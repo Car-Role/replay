@@ -97,6 +97,7 @@ pub struct Editor {
     fps: f64,
     has_game: bool,
     has_mic: bool,
+    has_voice: bool,
     error: Option<String>,
     video: VideoDecoder,
     audio: Option<AudioOut>,
@@ -113,6 +114,7 @@ pub struct Editor {
     out_point: f64,
     game_gain: u32,
     mic_gain: u32,
+    voice_gain: u32,
     keep_separate: bool,
     drag: Option<Drag>,
     /// Re-encode saves so they start on the exact frame.
@@ -161,17 +163,17 @@ impl Editor {
             ),
             Err(_) => ((1920, 1080), 0),
         };
-        let (duration, has_game, has_mic, fps, error) = match &info {
+        let (duration, has_game, has_mic, has_voice, fps, error) = match &info {
             Ok(m) => {
-                let (g, mi) = edit::audio_sources(m);
+                let [g, mi, vc] = edit::audio_sources(m);
                 let fps = m
                     .video()
                     .filter(|v| v.samples.len() > 1)
                     .map(|v| (v.samples.len() - 1) as f64 / (v.seconds(v.samples.len() - 1) - v.seconds(0)).max(0.001))
                     .unwrap_or(60.0);
-                (m.duration(), g.is_some(), mi.is_some(), fps, None)
+                (m.duration(), g.is_some(), mi.is_some(), vc.is_some(), fps, None)
             }
-            Err(e) => (0.0, false, false, 60.0, Some(format!("This file cannot be opened: {e}"))),
+            Err(e) => (0.0, false, false, false, 60.0, Some(format!("This file cannot be opened: {e}"))),
         };
         let wake = ctx.clone();
         let video = VideoDecoder::open(path, move || wake.request_repaint());
@@ -188,11 +190,12 @@ impl Editor {
                 crate::sys::init_tool();
                 let r = (|| -> Result<AudioTracks, String> {
                     let mut f = File::open(&p).map_err(|e| e.to_string())?;
-                    let (g, mi) = edit::audio_sources(&m);
+                    let [g, mi, vc] = edit::audio_sources(&m);
                     let dur = m.duration();
                     let game = g.map(|t| edit::decode_range(&mut f, t, 0.0, dur)).transpose()?;
                     let mic = mi.map(|t| edit::decode_range(&mut f, t, 0.0, dur)).transpose()?;
-                    Ok(AudioTracks { game, mic })
+                    let voice = vc.map(|t| edit::decode_range(&mut f, t, 0.0, dur)).transpose()?;
+                    Ok(AudioTracks { game, mic, voice })
                 })();
                 let _ = tx.send(r);
                 ctx.request_repaint();
@@ -207,6 +210,7 @@ impl Editor {
             fps,
             has_game,
             has_mic,
+            has_voice,
             error,
             video,
             audio: None,
@@ -222,6 +226,7 @@ impl Editor {
             out_point: duration,
             game_gain: cfg.audio.game_volume,
             mic_gain: cfg.audio.microphone_volume,
+            voice_gain: cfg.audio.voice_chat_volume,
             keep_separate: true,
             drag: None,
             exact: false,
@@ -258,6 +263,11 @@ impl Editor {
     /// True while filmstrip thumbnails are still decoding.
     pub fn loading(&self) -> bool {
         self.film_rx.is_some()
+    }
+
+    /// How many separate audio tracks the clip has (game, mic, voice chat).
+    fn stem_count(&self) -> usize {
+        usize::from(self.has_game) + usize::from(self.has_mic) + usize::from(self.has_voice)
     }
 
     /// For `--snapshot`: show the vertical export with its crop frame.
@@ -324,7 +334,7 @@ impl Editor {
                 Ok(tracks) if tracks.game.is_some() || tracks.mic.is_some() => {
                     self.waveform = waveform(&tracks);
                     let a = AudioOut::start(tracks);
-                    a.set_gains(self.game_gain, self.mic_gain);
+                    a.set_gains(self.game_gain, self.mic_gain, self.voice_gain);
                     a.seek(self.cursor);
                     a.set_playing(self.playing);
                     self.audio = Some(a);
@@ -858,7 +868,7 @@ impl Editor {
                 let c = if inside { t.text2 } else { t.text3.gamma_multiply(0.5) };
                 p.line_segment([Pos2::new(x, wave.center().y - h / 2.0), Pos2::new(x, wave.center().y + h / 2.0)], Stroke::new(1.0, c));
             }
-        } else if self.has_game || self.has_mic {
+        } else if self.has_game || self.has_mic || self.has_voice {
             p.text(wave.left_center(), Align2::LEFT_CENTER, "Loading audio\u{2026}", FontId::proportional(12.0), t.text3);
         }
         p.line_segment([Pos2::new(xp, wave.top()), Pos2::new(xp, wave.bottom())], Stroke::new(2.0, head));
@@ -1001,13 +1011,16 @@ impl Editor {
                         if self.has_mic {
                             row(ui, icon::MIC, "Mic", &mut self.mic_gain);
                         }
-                        if !self.has_game && !self.has_mic {
+                        if self.has_voice {
+                            row(ui, icon::PEOPLE, "Voice", &mut self.voice_gain);
+                        }
+                        if self.stem_count() == 0 {
                             ui.label(theme::caption("This clip has no audio.").color(t.text2));
                         }
                         if changed && let Some(a) = &self.audio {
-                            a.set_gains(self.game_gain, self.mic_gain);
+                            a.set_gains(self.game_gain, self.mic_gain, self.voice_gain);
                         }
-                        if self.has_mic {
+                        if self.stem_count() > 1 {
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new("Keep separate tracks").color(t.text));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1039,13 +1052,16 @@ impl Editor {
                             };
                             row("Video", format!("{} x {}  \u{00b7}  {:.0} fps", self.video_size.0, self.video_size.1, self.fps));
                             row("Codec", format!("{}  \u{00b7}  {}", self.codec, theme::fmt_mbps(self.video_kbps)));
-                            let tracks = match (self.has_game, self.has_mic) {
-                                (true, true) => "Game and mic",
-                                (true, false) => "Game",
-                                (false, true) => "Mic",
-                                _ => "None",
+                            let names: Vec<&str> = [(self.has_game, "game"), (self.has_mic, "mic"), (self.has_voice, "voice chat")]
+                                .into_iter()
+                                .filter_map(|(on, n)| on.then_some(n))
+                                .collect();
+                            let tracks = match names.as_slice() {
+                                [] => "None".to_string(),
+                                [one] => theme::sentence_case(one),
+                                [first @ .., last] => theme::sentence_case(&format!("{} and {last}", first.join(", "))),
                             };
-                            row("Audio", tracks.to_string());
+                            row("Audio", tracks);
                             row("Size", format!("{:.1} MB", self.size_bytes as f64 / 1e6));
                         });
                         if ui.add(egui::Button::new(theme::label_with_icon(icons, icon::FOLDER, "Show in folder")).frame_when_inactive(false)).clicked() {
@@ -1126,7 +1142,7 @@ impl Editor {
         let spec = edit::EncodeSpec { codec: crate::config::Codec::H264, bitrate_kbps: k, cbr: true, max_height: h, vertical: self.vertical.then_some(self.crop_center) };
         let seg = vec![Segment { path: self.path.clone(), start: self.in_point, end: self.out_point }];
         let out = edit::edited_name(&self.path, "discord");
-        let mix = Mix { game: self.game_gain, mic: self.mic_gain, keep_separate: false, bitrate_kbps: 128, music: None };
+        let mix = Mix { game: self.game_gain, mic: self.mic_gain, voice: self.voice_gain, keep_separate: false, bitrate_kbps: 128, music: None };
         shared.spawn_job(ctx, JobKind::Export, "Making a copy for Discord".into(), move |p| match edit::export(&seg, &out, &mix, &edit::VideoMode::Encode(spec), p) {
             Ok(path) => JobDone::ExportedCopied(path, soft),
             Err(e) => JobDone::Failed(format!("Copy for Discord failed: {e}")),
@@ -1140,7 +1156,9 @@ impl Editor {
         let secs = (self.out_point - self.in_point).max(0.1);
         let size_mb = self.preset.size_mb(self.custom_mb);
         let small = size_mb.is_some();
-        let audio_kbps = if small { 128 } else { shared.cfg.audio.bitrate_kbps * if self.keep_separate && self.has_mic { 3 } else { 1 } };
+        let stems = self.stem_count();
+        let tracks = if self.keep_separate && stems > 1 { stems as u32 + 1 } else { 1 };
+        let audio_kbps = if small { 128 } else { shared.cfg.audio.bitrate_kbps * tracks };
         // Original + landscape copies the video (or encodes it again for an exact cut).
         let copy = !small && !self.vertical;
         let spec = match size_mb {
@@ -1212,6 +1230,7 @@ impl Editor {
             let mix = Mix {
                 game: self.game_gain,
                 mic: self.mic_gain,
+                voice: self.voice_gain,
                 // Size targets keep only the mixed track; every bit goes to the picture.
                 keep_separate: self.keep_separate && !small,
                 bitrate_kbps: if small { 128 } else { shared.cfg.audio.bitrate_kbps },

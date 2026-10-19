@@ -180,6 +180,7 @@ fn export_cli(args: &[String]) -> bool {
     let mix = edit::Mix {
         game: cfg.audio.game_volume,
         mic: cfg.audio.microphone_volume,
+        voice: cfg.audio.voice_chat_volume,
         keep_separate: !small,
         bitrate_kbps: if small { 128 } else { cfg.audio.bitrate_kbps },
         music: None,
@@ -223,7 +224,7 @@ fn edit_cli(mode: &str, args: &[String]) -> bool {
     let Some(first) = segments.first() else { return false };
     let out = edit::edited_name(&first.path, if mode == "--trim" { "trim" } else { "joined" });
     let cfg = config::Config::load();
-    let mix = edit::Mix { game: cfg.audio.game_volume, mic: cfg.audio.microphone_volume, keep_separate: true, bitrate_kbps: cfg.audio.bitrate_kbps, music };
+    let mix = edit::Mix { game: cfg.audio.game_volume, mic: cfg.audio.microphone_volume, voice: cfg.audio.voice_chat_volume, keep_separate: true, bitrate_kbps: cfg.audio.bitrate_kbps, music };
     let t = std::time::Instant::now();
     match edit::export(&segments, &out, &mix, &edit::VideoMode::Copy, &|_| {}) {
         Ok(p) => {

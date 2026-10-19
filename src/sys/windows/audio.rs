@@ -34,6 +34,39 @@ pub enum Source {
     Process(u32),
     /// Capture endpoint id; empty means the default communications mic.
     Microphone(String),
+    /// Process loopback of the running voice chat app (see `VOICE_CHAT_APPS`).
+    /// Silent while none runs; follows the app when it restarts.
+    VoiceChat,
+}
+
+/// Voice chat apps recorded on the "Voice chat" track. Their voice runs in a
+/// child process, so the top process is captured with its whole tree.
+pub const VOICE_CHAT_APPS: &[&str] = &["discord.exe", "discordptb.exe", "discordcanary.exe"];
+
+/// The top process of a running voice chat app (one whose parent is not
+/// the same app), or None.
+fn voice_chat_pid() -> Option<u32> {
+    use std::collections::HashMap;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
+    let mut procs: HashMap<u32, (u32, String)> = HashMap::new();
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+        let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut ok = Process32FirstW(snap, &mut e).is_ok();
+        while ok {
+            let name = crate::util::from_wide(&e.szExeFile).to_ascii_lowercase();
+            procs.insert(e.th32ProcessID, (e.th32ParentProcessID, name));
+            ok = Process32NextW(snap, &mut e).is_ok();
+        }
+        let _ = CloseHandle(snap);
+    }
+    let is_app = |n: &str| VOICE_CHAT_APPS.contains(&n);
+    procs
+        .iter()
+        .filter(|(_, (parent, name))| is_app(name) && !procs.get(parent).is_some_and(|(_, pn)| pn == name))
+        .map(|(pid, _)| *pid)
+        .min()
 }
 
 fn pcm_format() -> WAVEFORMATEX {
@@ -391,6 +424,8 @@ struct Stream {
     client: IAudioClient,
     capture: IAudioCaptureClient,
     event: HANDLE,
+    /// The captured app, for sources that must follow it when it closes.
+    watch: Option<HANDLE>,
 }
 
 impl Drop for Stream {
@@ -398,14 +433,24 @@ impl Drop for Stream {
         unsafe {
             let _ = self.client.Stop();
             let _ = windows::Win32::Foundation::CloseHandle(self.event);
+            if let Some(h) = self.watch {
+                let _ = windows::Win32::Foundation::CloseHandle(h);
+            }
         }
     }
 }
 
 fn open(source: &Source) -> Result<Stream> {
+    let mut watch = None;
     let (client, loopback) = match source {
         Source::Process(pid) => (process_loopback_client(*pid)?, true),
         Source::Microphone(id) => (microphone_client(id)?, false),
+        Source::VoiceChat => {
+            use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
+            let pid = voice_chat_pid().ok_or_else(|| windows::core::Error::new(windows::Win32::Foundation::E_FAIL, "no voice chat app is running"))?;
+            watch = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }.ok();
+            (process_loopback_client(pid)?, true)
+        }
     };
     let mut flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
     if loopback {
@@ -418,7 +463,7 @@ fn open(source: &Source) -> Result<Stream> {
         client.SetEventHandle(event)?;
         let capture: IAudioCaptureClient = client.GetService()?;
         client.Start()?;
-        Ok(Stream { client, capture, event })
+        Ok(Stream { client, capture, event, watch })
     }
 }
 
@@ -428,6 +473,7 @@ pub fn run(source: Source, bitrate_kbps: u32, ring: Arc<Mutex<PacketRing>>, stop
     let label = match &source {
         Source::Process(_) => "replay game audio",
         Source::Microphone(_) => "replay mic",
+        Source::VoiceChat => "replay voice chat",
     };
     crate::util::set_thread(label, windows::Win32::System::Threading::THREAD_PRIORITY_NORMAL);
     unsafe {
@@ -477,7 +523,17 @@ pub fn run(source: Source, bitrate_kbps: u32, ring: Arc<Mutex<PacketRing>>, stop
 }
 
 fn capture_loop(s: &Stream, timeline: &mut Timeline, pcm: &mut Vec<i16>, stop: &AtomicBool) -> Result<()> {
+    let mut polls = 0u32;
     while !stop.load(Ordering::Acquire) {
+        // About every 2 s: a followed app that closed ends the stream, so it
+        // is found again (and the track stays silent meanwhile).
+        polls = polls.wrapping_add(1);
+        if let Some(h) = s.watch
+            && polls % 50 == 0
+            && unsafe { windows::Win32::System::Threading::WaitForSingleObject(h, 0) } == windows::Win32::Foundation::WAIT_OBJECT_0
+        {
+            return Err(windows::core::Error::new(windows::Win32::Foundation::E_FAIL, "the app closed"));
+        }
         // Poll instead of waking on every 10 ms engine period: the 200 ms
         // buffer leaves plenty of room, and this cuts wakeups by 4x.
         std::thread::sleep(POLL);

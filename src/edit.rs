@@ -31,7 +31,8 @@ pub struct Mix {
     /// Percent; 100 keeps the level.
     pub game: u32,
     pub mic: u32,
-    /// Also keep separate Game and Microphone tracks after the mix.
+    pub voice: u32,
+    /// Also keep the separate Game, Microphone and Voice chat tracks after the mix.
     pub keep_separate: bool,
     pub bitrate_kbps: u32,
     /// A music file under the whole export.
@@ -194,12 +195,23 @@ pub fn same_video_settings(paths: &[PathBuf]) -> bool {
     kinds.iter().all(|k| k.is_some() && *k == kinds[0])
 }
 
-/// Game and mic tracks of a file. Files from other programs have one
-/// unnamed audio track, which is treated as game audio.
-pub fn audio_sources(m: &Mp4In) -> (Option<&TrackIn>, Option<&TrackIn>) {
-    let game = m.audio_named("Game").or_else(|| m.audio().find(|t| t.name != "Microphone" && t.name != "Game + Mic"));
-    let mic = m.audio_named("Microphone");
-    (game, mic)
+/// The game, mic and voice chat tracks of a file (`clip::STEMS` order).
+/// Files from other programs have one unnamed audio track, which is
+/// treated as game audio.
+pub fn audio_sources(m: &Mp4In) -> Stems<&TrackIn> {
+    use crate::clip::{STEMS, is_mix_name};
+    let game = m.audio_named(STEMS[0]).or_else(|| m.audio().find(|t| !STEMS.contains(&t.name.as_str()) && !is_mix_name(&t.name)));
+    [game, m.audio_named(STEMS[1]), m.audio_named(STEMS[2])]
+}
+
+/// One value per audio stem, in `clip::STEMS` order: game, mic, voice chat.
+pub type Stems<T> = [Option<T>; 3];
+
+impl Mix {
+    /// Gains of the stems, in `clip::STEMS` order.
+    pub fn gains(&self) -> [u32; 3] {
+        [self.game, self.mic, self.voice]
+    }
 }
 
 /// Decodes `track` between `from` and `to` seconds into exactly
@@ -301,14 +313,12 @@ pub fn export(segments: &[Segment], out: &Path, mix: &Mix, video: &VideoMode, pr
     // Audio: decode, line up per segment, mix.
     let mut handles: Vec<File> = segments.iter().map(|s| File::open(&s.path)).collect::<Result<_, _>>().map_err(|e| e.to_string())?;
     let total_frames = (total * f64::from(SAMPLE_RATE)).round() as usize;
-    let mut game_pcm: Option<Vec<i16>> = None;
-    let mut mic_pcm: Option<Vec<i16>> = None;
+    let mut stems: Stems<Vec<i16>> = [None, None, None];
     let mut pos = 0usize;
     for (si, f) in files.iter().enumerate() {
         let (t0, len) = ranges[si];
         let frames = (len * f64::from(SAMPLE_RATE)).round() as usize;
-        let (game, mic) = audio_sources(f);
-        for (src, dst) in [(game, &mut game_pcm), (mic, &mut mic_pcm)] {
+        for (src, dst) in audio_sources(f).into_iter().zip(stems.iter_mut()) {
             if let Some(track) = src {
                 let pcm = decode_range(&mut handles[si], track, t0, t0 + len)?;
                 let buf = dst.get_or_insert_with(|| vec![0; total_frames * CHANNELS as usize]);
@@ -321,7 +331,7 @@ pub fn export(segments: &[Segment], out: &Path, mix: &Mix, video: &VideoMode, pr
         progress(0.4 * (si + 1) as f32 / files.len() as f32);
     }
 
-    let audio = mix_audio(game_pcm, mic_pcm, total_frames, mix)?;
+    let audio = mix_audio(stems, total_frames, mix)?;
     progress(0.6);
 
     // Video track from the plan (samples are already in MP4 format).
@@ -364,20 +374,18 @@ pub fn export(segments: &[Segment], out: &Path, mix: &Mix, video: &VideoMode, pr
 
 /// Decodes the segments' game and mic audio into one timeline each.
 /// Decoded game and mic audio (48 kHz stereo), when the clips have them.
-type GameAndMic = (Option<Vec<i16>>, Option<Vec<i16>>);
 
-fn decode_segments(files: &[Mp4In], segments: &[Segment], ranges: &[(f64, f64)], progress: &dyn Fn(f32)) -> Result<GameAndMic, String> {
+
+fn decode_segments(files: &[Mp4In], segments: &[Segment], ranges: &[(f64, f64)], progress: &dyn Fn(f32)) -> Result<Stems<Vec<i16>>, String> {
     let mut handles: Vec<File> = segments.iter().map(|s| File::open(&s.path)).collect::<Result<_, _>>().map_err(|e| e.to_string())?;
     let total: f64 = ranges.iter().map(|r| r.1).sum();
     let total_frames = (total * f64::from(SAMPLE_RATE)).round() as usize;
-    let mut game_pcm: Option<Vec<i16>> = None;
-    let mut mic_pcm: Option<Vec<i16>> = None;
+    let mut stems: Stems<Vec<i16>> = [None, None, None];
     let mut pos = 0usize;
     for (si, f) in files.iter().enumerate() {
         let (t0, len) = ranges[si];
         let frames = (len * f64::from(SAMPLE_RATE)).round() as usize;
-        let (game, mic) = audio_sources(f);
-        for (src, dst) in [(game, &mut game_pcm), (mic, &mut mic_pcm)] {
+        for (src, dst) in audio_sources(f).into_iter().zip(stems.iter_mut()) {
             if let Some(track) = src {
                 let pcm = decode_range(&mut handles[si], track, t0, t0 + len)?;
                 let buf = dst.get_or_insert_with(|| vec![0; total_frames * CHANNELS as usize]);
@@ -389,53 +397,55 @@ fn decode_segments(files: &[Mp4In], segments: &[Segment], ranges: &[(f64, f64)],
         pos += frames;
         progress((si + 1) as f32 / files.len() as f32);
     }
-    Ok((game_pcm, mic_pcm))
+    Ok(stems)
 }
 
-/// Mixes and encodes the audio tracks of an export.
-fn mix_audio(game_pcm: Option<Vec<i16>>, mic_pcm: Option<Vec<i16>>, frames: usize, mix: &Mix) -> Result<Vec<AudioTrackData>, String> {
+/// Mixes and encodes the audio tracks of an export: the mix first, then
+/// (when kept) each stem on its own track.
+fn mix_audio(stems: Stems<Vec<i16>>, frames: usize, mix: &Mix) -> Result<Vec<AudioTrackData>, String> {
+    use crate::clip::{STEMS, mix_name};
     let enc = |name: &str, pcm: &[i16]| encode_track(name, pcm, mix.bitrate_kbps);
+    let gains = mix.gains();
+    let present: Vec<(usize, &Vec<i16>)> = stems.iter().enumerate().filter_map(|(i, s)| s.as_ref().map(|s| (i, s))).collect();
+    let separate = |audio: &mut Vec<AudioTrackData>| -> Result<(), String> {
+        for (i, pcm) in &present {
+            audio.push(enc(STEMS[*i], pcm)?);
+        }
+        Ok(())
+    };
     if let Some(m) = &mix.music {
         let raw = crate::sys::player::decode_audio_file(&m.path)?;
         let music = shape_music(&raw, frames, m);
         let mut mixed = music.clone();
-        if let Some(g) = &game_pcm {
-            mix_into(&mut mixed, g, 100, mix.game);
-        }
-        if let Some(mi) = &mic_pcm {
-            mix_into(&mut mixed, mi, 100, mix.mic);
+        for (i, pcm) in &present {
+            mix_into(&mut mixed, pcm, 100, gains[*i]);
         }
         let mut audio = vec![enc("Mix", &mixed)?];
         if mix.keep_separate {
-            if let Some(g) = &game_pcm {
-                audio.push(enc("Game", g)?);
-            }
-            if let Some(mi) = &mic_pcm {
-                audio.push(enc("Microphone", mi)?);
-            }
+            separate(&mut audio)?;
             audio.push(enc("Music", &music)?);
         }
         return Ok(audio);
     }
     let mut audio: Vec<AudioTrackData> = Vec::new();
-    match (&game_pcm, &mic_pcm) {
-        (Some(g), Some(m)) => {
-            let mut mixed = vec![0i16; g.len()];
-            mix_into(&mut mixed, g, 0, mix.game);
-            mix_into(&mut mixed, m, 100, mix.mic);
-            audio.push(enc("Game + Mic", &mixed)?);
+    match present.as_slice() {
+        [] => {}
+        [(i, one)] => {
+            let mut v = vec![0i16; one.len()];
+            mix_into(&mut v, one, 0, gains[*i]);
+            audio.push(enc(STEMS[*i], &v)?);
+        }
+        many => {
+            let mut mixed = vec![0i16; many[0].1.len()];
+            for (k, (i, pcm)) in many.iter().enumerate() {
+                mix_into(&mut mixed, pcm, if k == 0 { 0 } else { 100 }, gains[*i]);
+            }
+            let names: Vec<usize> = many.iter().map(|(i, _)| *i).collect();
+            audio.push(enc(&mix_name(&names), &mixed)?);
             if mix.keep_separate {
-                audio.push(enc("Game", g)?);
-                audio.push(enc("Microphone", m)?);
+                separate(&mut audio)?;
             }
         }
-        (Some(one), None) | (None, Some(one)) => {
-            let gain = if game_pcm.is_some() { mix.game } else { mix.mic };
-            let mut v = vec![0i16; one.len()];
-            mix_into(&mut v, one, 0, gain);
-            audio.push(enc(if game_pcm.is_some() { "Game" } else { "Microphone" }, &v)?);
-        }
-        (None, None) => {}
     }
     Ok(audio)
 }
@@ -534,8 +544,8 @@ fn export_encoded(segments: &[Segment], out: &Path, mix: &Mix, spec: &EncodeSpec
 
     // Audio.
     let audio = (|| {
-        let (g, m) = decode_segments(&files, segments, &ranges, &|f| progress(0.85 + 0.05 * f))?;
-        mix_audio(g, m, (total * f64::from(SAMPLE_RATE)).round() as usize, mix)
+        let stems = decode_segments(&files, segments, &ranges, &|f| progress(0.85 + 0.05 * f))?;
+        mix_audio(stems, (total * f64::from(SAMPLE_RATE)).round() as usize, mix)
     })();
     let audio = match audio {
         Ok(a) => a,

@@ -302,10 +302,17 @@ impl SettingsPage {
                 }
             });
         });
-        theme::setting(ui, t, false, Some(icon::VOLUME), "Mixed track", "Add game and mic together as the first track, so Discord and web players hear both", |ui| {
+        theme::setting(ui, t, false, Some(icon::PEOPLE), "Voice chat", "Record Discord on its own track, so you can keep or mute your friends in each clip", |ui| {
+            theme::toggle(ui, t, &mut d.audio.voice_chat);
+        });
+        theme::setting(ui, t, false, Some(icon::VOLUME), "Mixed track", "Add everything together as the first track, so Discord and web players hear it all", |ui| {
             theme::toggle(ui, t, &mut d.audio.mixed_track);
         });
-        for (label, v) in [("Game volume in the mix", &mut d.audio.game_volume), ("Mic volume in the mix", &mut d.audio.microphone_volume)] {
+        let mut volumes = vec![("Game volume in the mix", &mut d.audio.game_volume), ("Mic volume in the mix", &mut d.audio.microphone_volume)];
+        if d.audio.voice_chat {
+            volumes.push(("Voice chat volume in the mix", &mut d.audio.voice_chat_volume));
+        }
+        for (label, v) in volumes {
             theme::setting(ui, t, false, None, label, "", |ui| {
                 let label = format!("{v}%");
                 theme::slider_row(ui, t, label, v, 0..=200, false);

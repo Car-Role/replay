@@ -76,6 +76,36 @@ const CMD_RELEASE_PAGE: usize = 107;
 const CMD_RECORD: usize = 108;
 const CMD_STOP_BASE: usize = 200;
 
+/// Starts or stops one shared capture. Its ring outlives the capture while
+/// sessions remain (`idle` false), so saves in the grace time still have it.
+fn ensure_shared(slot: &mut Option<Mic>, want: bool, idle: bool, name: &str, src: crate::audio::Source, max_secs: u32, kbps: u32) {
+    match (slot.as_mut(), want) {
+        (None, true) => {
+            let ring = Arc::new(Mutex::new(crate::session::ring_for(max_secs, kbps)));
+            let stop = Arc::new(AtomicBool::new(false));
+            let (r, s) = (ring.clone(), stop.clone());
+            let thread = std::thread::Builder::new()
+                .name(name.into())
+                .spawn(move || crate::audio::run(src, kbps, r, s))
+                .ok();
+            *slot = Some(Mic { ring, stop, thread });
+        }
+        (Some(m), false) => {
+            if m.thread.is_some() {
+                m.stop();
+            }
+            if idle {
+                *slot = None;
+            }
+        }
+        (Some(m), true) if m.thread.is_none() => {
+            *slot = None;
+            ensure_shared(slot, want, idle, name, src, max_secs, kbps);
+        }
+        _ => {}
+    }
+}
+
 struct Mic {
     ring: Arc<Mutex<PacketRing>>,
     stop: Arc<AtomicBool>,
@@ -98,6 +128,8 @@ struct App {
     gpu: Option<Arc<Gpu>>,
     sessions: Vec<Session>,
     mic: Option<Mic>,
+    /// Voice chat (Discord), shared by all games like the microphone.
+    voice: Option<Mic>,
     last_focused: Option<u32>,
     retry: HashMap<u32, (Instant, u32)>,
     stopped_by_user: Vec<u32>,
@@ -199,6 +231,7 @@ pub fn run() -> windows::core::Result<()> {
             gpu: None,
             sessions: Vec::new(),
             mic: None,
+            voice: None,
             last_focused: None,
             retry: HashMap::new(),
             stopped_by_user: Vec::new(),
@@ -641,35 +674,19 @@ impl App {
         self.update_tray();
     }
 
+    /// Starts or stops the shared captures (microphone, voice chat) as games run.
     fn ensure_mic(&mut self) {
-        let want = self.cfg.audio.microphone && self.running().next().is_some();
-        match (&mut self.mic, want) {
-            (None, true) => {
-                let ring = Arc::new(Mutex::new(crate::session::ring_for(self.cfg.max_replay_seconds(), self.cfg.audio.bitrate_kbps)));
-                let stop = Arc::new(AtomicBool::new(false));
-                let (r, s) = (ring.clone(), stop.clone());
-                let src = crate::audio::Source::Microphone(self.cfg.audio.microphone_device.clone());
-                let kbps = self.cfg.audio.bitrate_kbps;
-                let thread = std::thread::Builder::new()
-                    .name("mic".into())
-                    .spawn(move || crate::audio::run(src, kbps, r, s))
-                    .ok();
-                self.mic = Some(Mic { ring, stop, thread });
-            }
-            (Some(m), false) => {
-                // Stop capturing but keep the ring for saves during the grace time.
-                if m.thread.is_some() {
-                    m.stop();
-                }
-                if self.sessions.is_empty() {
-                    self.mic = None;
-                }
-            }
-            (Some(m), true) if m.thread.is_none() => {
-                self.mic = None;
-                self.ensure_mic();
-            }
-            _ => {}
+        let running = self.running().next().is_some();
+        let (a, max, idle) = (&self.cfg.audio, self.cfg.max_replay_seconds(), self.sessions.is_empty());
+        let mic = crate::audio::Source::Microphone(a.microphone_device.clone());
+        ensure_shared(&mut self.mic, a.microphone && running, idle, "mic", mic, max, a.bitrate_kbps);
+        ensure_shared(&mut self.voice, a.voice_chat && running, idle, "voice", crate::audio::Source::VoiceChat, max, a.bitrate_kbps);
+    }
+
+    fn stop_shared(&mut self) {
+        for m in [self.mic.take(), self.voice.take()].into_iter().flatten() {
+            let mut m = m;
+            m.stop();
         }
     }
 
@@ -739,7 +756,8 @@ impl App {
         let Ok(state) = state else { return };
         let game_audio = s.game_audio.as_ref().and_then(|r| r.lock().ok().map(|r| r.snapshot_from(t0)));
         let mic = self.mic.as_ref().and_then(|m| m.ring.lock().ok().map(|r| r.snapshot_from(t0)));
-        let src = ClipSource { game_name: s.game.name.clone(), video, state, game_audio, mic };
+        let voice = self.voice.as_ref().and_then(|m| m.ring.lock().ok().map(|r| r.snapshot_from(t0)));
+        let src = ClipSource { game_name: s.game.name.clone(), video, state, game_audio, mic, voice };
         let dir = self.cfg.output_dir.clone();
         let opts = AudioOptions::from_config(&self.cfg);
         let hwnd = self.hwnd.0 as isize;
@@ -826,6 +844,7 @@ impl App {
             state: s.video_state.clone(),
             game: s.game_audio.clone(),
             mic: self.mic.as_ref().map(|m| m.ring.clone()),
+            voice: self.voice.as_ref().map(|m| m.ring.clone()),
         };
         let (name, hwnd_game) = (s.game.name.clone(), s.game.hwnd);
         let hwnd = self.hwnd.0 as isize;
@@ -1000,9 +1019,7 @@ impl App {
             s.stop();
         }
         self.finish_all_recordings();
-        if let Some(mut m) = self.mic.take() {
-            m.stop();
-        }
+        self.stop_shared();
         match crate::update::apply_and_restart(&staged, &[]) {
             Ok(()) => true,
             Err(e) => {
@@ -1099,9 +1116,7 @@ impl App {
             }
             self.sync_recordings();
             self.sessions.clear();
-            if let Some(mut m) = self.mic.take() {
-                m.stop();
-            }
+            self.stop_shared();
             self.last_checked = None;
             self.scan_all_windows();
             self.check_foreground();
@@ -1224,9 +1239,7 @@ impl App {
         }
         self.finish_all_recordings();
         self.sessions.clear();
-        if let Some(mut m) = self.mic.take() {
-            m.stop();
-        }
+        self.stop_shared();
         tray::remove(self.hwnd);
         log::info!("exit");
     }

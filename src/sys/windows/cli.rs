@@ -53,6 +53,9 @@ pub fn handle(mode: &str, args: &[String]) -> bool {
             let secs = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(8);
             let codec = args.get(2).map(String::as_str).filter(|a| !a.starts_with("--"));
             let webcam = args.iter().any(|a| a == "--webcam");
+            if args.iter().any(|a| a == "--voice") {
+                VOICE.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             if args.iter().any(|a| a == "--hdr") {
                 crate::hdr::FORCE.store(true, std::sync::atomic::Ordering::Relaxed);
             }
@@ -181,6 +184,9 @@ fn probe() {
 }
 
 /// Records the primary monitor (plus microphone) and verifies the clip.
+/// `--selftest --voice`: also capture voice chat (Discord) on its own track.
+static VOICE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn selftest(secs: u64, codec: Option<&str>, with_webcam: bool) -> bool {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
@@ -230,10 +236,17 @@ fn selftest(secs: u64, codec: Option<&str>, with_webcam: bool) -> bool {
         let (r, st, kbps) = (mic_ring.clone(), mic_stop.clone(), cfg.audio.bitrate_kbps);
         std::thread::spawn(move || audio::run(audio::Source::Microphone(String::new()), kbps, r, st))
     };
+    let voice_ring = VOICE
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .then(|| std::sync::Arc::new(std::sync::Mutex::new(session::ring_for(cfg.replay_seconds, cfg.audio.bitrate_kbps))));
+    let voice_thread = voice_ring.as_ref().map(|ring| {
+        let (r, st, kbps) = (ring.clone(), mic_stop.clone(), cfg.audio.bitrate_kbps);
+        std::thread::spawn(move || audio::run(audio::Source::VoiceChat, kbps, r, st))
+    });
     println!("recording the primary monitor for {secs} s with {:?}...", cfg.video.codec);
     // A session recording runs alongside, to test the streaming writer.
     let (rec_tx, rec_rx) = std::sync::mpsc::channel();
-    let rec_src = crate::record::Sources { video: s.video.clone(), state: s.video_state.clone(), game: s.game_audio.clone(), mic: Some(mic_ring.clone()) };
+    let rec_src = crate::record::Sources { video: s.video.clone(), state: s.video_state.clone(), game: s.game_audio.clone(), mic: Some(mic_ring.clone()), voice: voice_ring.clone() };
     std::thread::sleep(Duration::from_millis(1200));
     let mut rec = match crate::record::start(&cfg.output_dir, "Self test", rec_src, clip::AudioOptions::from_config(&cfg), move |r| {
         let _ = rec_tx.send(r);
@@ -299,8 +312,12 @@ fn selftest(secs: u64, codec: Option<&str>, with_webcam: bool) -> bool {
     let bytes: usize = video.iter().map(|p| p.data.len()).sum();
     let game_audio = s.game_audio.as_ref().map(|r| r.lock().unwrap().snapshot_from(t0));
     let mic = Some(mic_ring.lock().unwrap().snapshot_from(t0));
+    let voice = voice_ring.as_ref().map(|r| r.lock().unwrap().snapshot_from(t0));
     mic_stop.store(true, std::sync::atomic::Ordering::Release);
     let _ = mic_thread.join();
+    if let Some(t) = voice_thread {
+        let _ = t.join();
+    }
     s.stop();
 
     println!(
@@ -317,9 +334,10 @@ fn selftest(secs: u64, codec: Option<&str>, with_webcam: bool) -> bool {
         println!("webcam frames: {}", f.load(std::sync::atomic::Ordering::Acquire));
     }
     println!(
-        "audio packets: game {}, mic {}",
+        "audio packets: game {}, mic {}, voice chat {}",
         game_audio.as_ref().map_or(0, Vec::len),
-        mic.as_ref().map_or(0, Vec::len)
+        mic.as_ref().map_or(0, Vec::len),
+        voice.as_ref().map_or(0, Vec::len)
     );
     println!("process CPU while recording: {:.2}% of one core", cpu / wall * 100.0);
     println!("process memory (working set): {:.1} MB", mem as f64 / 1e6);
@@ -339,7 +357,7 @@ fn selftest(secs: u64, codec: Option<&str>, with_webcam: bool) -> bool {
         println!("FAIL: no video frames (is the screen changing?)");
         return false;
     }
-    let src = clip::ClipSource { game_name: "Self test".into(), video, state, game_audio, mic };
+    let src = clip::ClipSource { game_name: "Self test".into(), video, state, game_audio, mic, voice };
     let path = match clip::write_clip(src, &cfg.output_dir, &clip::AudioOptions::from_config(&cfg)) {
         Ok(p) => p,
         Err(e) => {

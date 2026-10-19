@@ -283,6 +283,7 @@ struct Shared {
     seek_to: Mutex<Option<u64>>,
     game_gain: AtomicU32,
     mic_gain: AtomicU32,
+    voice_gain: AtomicU32,
     stop: AtomicBool,
 }
 
@@ -298,6 +299,7 @@ impl AudioOut {
             .game
             .as_ref()
             .or(tracks.mic.as_ref())
+            .or(tracks.voice.as_ref())
             .map(|v| (v.len() / CHANNELS as usize) as u64)
             .unwrap_or(0);
         let shared = Arc::new(Shared {
@@ -307,6 +309,7 @@ impl AudioOut {
             seek_to: Mutex::new(None),
             game_gain: AtomicU32::new(100),
             mic_gain: AtomicU32::new(100),
+            voice_gain: AtomicU32::new(100),
             stop: AtomicBool::new(false),
         });
         let s = shared.clone();
@@ -337,9 +340,10 @@ impl AudioOut {
         }
     }
 
-    pub fn set_gains(&self, game: u32, mic: u32) {
+    pub fn set_gains(&self, game: u32, mic: u32, voice: u32) {
         self.shared.game_gain.store(game, Ordering::Relaxed);
         self.shared.mic_gain.store(mic, Ordering::Relaxed);
+        self.shared.voice_gain.store(voice, Ordering::Relaxed);
     }
 
     pub fn position(&self) -> f64 {
@@ -409,12 +413,14 @@ fn render_loop(s: &Shared, tracks: &AudioTracks, total: u64) -> windows::core::R
                 let out = std::slice::from_raw_parts_mut(data.cast::<i16>(), n as usize * CHANNELS as usize);
                 let gg = s.game_gain.load(Ordering::Relaxed) as i32;
                 let mg = s.mic_gain.load(Ordering::Relaxed) as i32;
+                let vg = s.voice_gain.load(Ordering::Relaxed) as i32;
                 let start = pos as usize * CHANNELS as usize;
                 for (k, o) in out.iter_mut().enumerate() {
                     let i = start + k;
                     let g = tracks.game.as_ref().and_then(|v| v.get(i)).copied().unwrap_or(0) as i32 * gg;
                     let m = tracks.mic.as_ref().and_then(|v| v.get(i)).copied().unwrap_or(0) as i32 * mg;
-                    *o = ((g + m) / 100).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                    let c = tracks.voice.as_ref().and_then(|v| v.get(i)).copied().unwrap_or(0) as i32 * vg;
+                    *o = ((g + m + c) / 100).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
                 }
                 render.ReleaseBuffer(n, 0)?;
                 pos += u64::from(n);

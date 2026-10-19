@@ -1029,6 +1029,7 @@ impl LibraryApp {
         let mix = crate::edit::Mix {
             game: m.game_volume,
             mic: a.microphone_volume,
+            voice: a.voice_chat_volume,
             keep_separate: true,
             bitrate_kbps: a.bitrate_kbps,
             music: m.music.map(|path| crate::edit::Music { path, volume: m.music_volume, fade_out: m.fade_out }),
@@ -1066,7 +1067,7 @@ impl LibraryApp {
         let Some(first) = segments.first() else { return };
         let out = crate::edit::edited_name(&first.path, "joined");
         let a = &self.shared.cfg.audio;
-        let mix = crate::edit::Mix { game: a.game_volume, mic: a.microphone_volume, keep_separate: true, bitrate_kbps: a.bitrate_kbps, music: None };
+        let mix = crate::edit::Mix { game: a.game_volume, mic: a.microphone_volume, voice: a.voice_chat_volume, keep_separate: true, bitrate_kbps: a.bitrate_kbps, music: None };
         let label = format!("Joining {} clips", segments.len());
         let total: f64 = list.iter().map(|c| c.duration).sum();
         self.shared.spawn_job(ctx, JobKind::Export, label, move |p| export_joined(&segments, &out, &mix, total, p, "Join"));

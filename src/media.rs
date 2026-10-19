@@ -45,6 +45,7 @@ pub struct Frame {
 pub struct AudioTracks {
     pub game: Option<Vec<i16>>,
     pub mic: Option<Vec<i16>>,
+    pub voice: Option<Vec<i16>>,
 }
 
 /// Wall clock for clips without audio (or when no output device exists).

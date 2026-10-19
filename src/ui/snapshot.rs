@@ -27,6 +27,7 @@ enum Step {
     SettingsGeneral,
     Focus,
     SettingsRecording,
+    SettingsAudio,
     SettingsSharing,
     SettingsAbout,
     TagsDialog,
@@ -36,7 +37,7 @@ enum Step {
     Empty,
 }
 
-const STEPS: [(Step, &str); 19] = [
+const STEPS: [(Step, &str); 20] = [
     (Step::Clips, "01-clips"),
     (Step::TileHover, "01b-tile-hover-on-star"),
     (Step::ClipsByGame, "02-clips-by-game"),
@@ -49,6 +50,7 @@ const STEPS: [(Step, &str); 19] = [
     (Step::SettingsGeneral, "08-settings-general"),
     (Step::Focus, "08b-keyboard-focus"),
     (Step::SettingsRecording, "09-settings-recording"),
+    (Step::SettingsAudio, "09b-settings-audio"),
     (Step::SettingsSharing, "10-settings-sharing"),
     (Step::SettingsAbout, "11-settings-about"),
     (Step::TagsDialog, "12-dialog-tags"),
@@ -201,6 +203,7 @@ impl LibraryApp {
                 ctx.data_mut(|d| d.insert_temp(egui::Id::new("snapshot-focus"), true));
             }
             Step::SettingsRecording => self.settings.show(super::settings::Category::Recording),
+            Step::SettingsAudio => self.settings.show(super::settings::Category::Audio),
             Step::SettingsSharing => self.settings.show(super::settings::Category::Sharing),
             Step::SettingsAbout => self.settings.show(super::settings::Category::About),
             Step::TagsDialog => {

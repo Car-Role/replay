@@ -569,7 +569,7 @@ impl App {
         let game_audio = s.rec.game_audio().and_then(|r| r.lock().ok().map(|r| r.snapshot_from(t0)));
         let mic = self.mic.as_ref().and_then(|m| m.ring.lock().ok().map(|r| r.snapshot_from(t0)));
         let name = s.rec.game().name.clone();
-        let src = ClipSource { game_name: name.clone(), video, state, game_audio, mic };
+        let src = ClipSource { game_name: name.clone(), video, state, game_audio, mic, voice: None };
         let dir = self.cfg.output_dir.clone();
         let opts = AudioOptions::from_config(&self.cfg);
         let proxy = self.proxy.clone();

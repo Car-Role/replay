@@ -31,6 +31,14 @@ pub struct Sources {
     pub state: Arc<Mutex<VideoState>>,
     pub game: Option<Arc<Mutex<PacketRing>>>,
     pub mic: Option<Arc<Mutex<PacketRing>>>,
+    pub voice: Option<Arc<Mutex<PacketRing>>>,
+}
+
+impl Sources {
+    /// The audio rings in `clip::STEMS` order.
+    fn audio(&self) -> [&Option<Arc<Mutex<PacketRing>>>; 3] {
+        [&self.game, &self.mic, &self.voice]
+    }
 }
 
 /// A running recording. Dropping it does not stop it; call `stop`.
@@ -125,16 +133,18 @@ struct AudioIn {
     /// Decoder and output position (frames from t0) for the mix.
     dec: Option<AacDecoder>,
     pos: u64,
+    /// This source's place in the mixer.
+    slot: usize,
 }
 
 struct Mixer {
     track: usize,
     enc: AacEncoder,
-    /// Decoded PCM of game and mic from frame `base` on (interleaved stereo).
-    pcm: [Vec<i16>; 2],
-    ends: [u64; 2],
+    /// Decoded PCM of each mixed source from frame `base` on (interleaved stereo).
+    pcm: Vec<Vec<i16>>,
+    ends: Vec<u64>,
     base: u64,
-    gains: [u32; 2],
+    gains: Vec<u32>,
     count: u64,
 }
 
@@ -159,10 +169,10 @@ impl Mixer {
         self.ends[i] = self.ends[i].max(at + (pcm.len() / ch) as u64);
     }
 
-    /// Mixes and encodes what both sources cover (or everything, at the end).
+    /// Mixes and encodes what every source covers (or everything, at the end).
     fn drain(&mut self, flush: bool, out: &mut Vec<Vec<u8>>) -> Result<(), String> {
-        let lo = self.ends[0].min(self.ends[1]);
-        let hi = self.ends[0].max(self.ends[1]);
+        let lo = self.ends.iter().copied().min().unwrap_or(0);
+        let hi = self.ends.iter().copied().max().unwrap_or(0);
         let ready = if flush {
             hi
         } else if hi - lo > MAX_LAG_FRAMES {
@@ -204,7 +214,7 @@ struct Writer {
     last_video: Ticks,
     last_video_time: Option<u64>,
     first_key: Option<Vec<u8>>,
-    audio: [Option<AudioIn>; 2],
+    audio: [Option<AudioIn>; 3],
     mixer: Option<Mixer>,
     scratch: Vec<u8>,
 }
@@ -236,28 +246,27 @@ impl Writer {
             name: "Video".into(),
             enabled: true,
         }];
-        let both = src.game.is_some() && src.mic.is_some();
+        let present: Vec<usize> = src.audio().iter().enumerate().filter(|(_, r)| r.is_some()).map(|(i, _)| i).collect();
         let mut mixer = None;
-        if both && opts.mixed_track {
+        if present.len() > 1 && opts.mixed_track {
+            let gains = opts.gains();
             mixer = Some(Mixer {
                 track: tracks.len(),
                 enc: AacEncoder::new(opts.bitrate_kbps)?,
-                pcm: [Vec::new(), Vec::new()],
-                ends: [0, 0],
+                pcm: vec![Vec::new(); present.len()],
+                ends: vec![0; present.len()],
                 base: 0,
-                gains: [opts.game_volume, opts.mic_volume],
+                gains: present.iter().map(|&i| gains[i]).collect(),
                 count: 0,
             });
-            tracks.push(audio_track("Game + Mic", opts.bitrate_kbps));
+            tracks.push(audio_track(&crate::clip::mix_name(&present), opts.bitrate_kbps));
         }
         let asc = aac_asc(SAMPLE_RATE, CHANNELS);
-        let mut audio: [Option<AudioIn>; 2] = [None, None];
-        for (i, (ring, name)) in [(&src.game, "Game"), (&src.mic, "Microphone")].into_iter().enumerate() {
-            if ring.is_some() {
-                let dec = if mixer.is_some() { Some(AacDecoder::new(&asc)?) } else { None };
-                audio[i] = Some(AudioIn { track: tracks.len(), last: None, count: 0, dec, pos: 0 });
-                tracks.push(audio_track(name, opts.bitrate_kbps));
-            }
+        let mut audio: [Option<AudioIn>; 3] = [None, None, None];
+        for (slot, &i) in present.iter().enumerate() {
+            let dec = if mixer.is_some() { Some(AacDecoder::new(&asc)?) } else { None };
+            audio[i] = Some(AudioIn { track: tracks.len(), last: None, count: 0, dec, pos: 0, slot });
+            tracks.push(audio_track(crate::clip::STEMS[i], opts.bitrate_kbps));
         }
         let w = StreamWriter::new(BufWriter::with_capacity(4 << 20, file), tracks).map_err(|e| e.to_string())?;
         Ok(Self {
@@ -314,7 +323,7 @@ impl Writer {
         self.w.append(0, &infos, &data).map_err(io)?;
 
         // Audio: the separate tracks are copied; the mix is decoded, mixed and encoded.
-        for (i, ring) in [&src.game, &src.mic].into_iter().enumerate() {
+        for (i, ring) in src.audio().into_iter().enumerate() {
             let (Some(ring), Some(a)) = (ring, self.audio[i].as_mut()) else { continue };
             let from = a.last.map(|l| l + 1).unwrap_or(t0);
             let packets = ring.lock().map_err(|_| "audio buffer unavailable")?.snapshot_from(from);
@@ -335,7 +344,7 @@ impl Writer {
                 if let (Some(dec), Some(m)) = (a.dec.as_mut(), self.mixer.as_mut()) {
                     pcm.clear();
                     dec.decode(&p.data, &mut pcm)?;
-                    m.put(i, a.pos, &pcm);
+                    m.put(a.slot, a.pos, &pcm);
                     a.pos += (pcm.len() / CHANNELS as usize) as u64;
                 }
             }
@@ -391,9 +400,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mixer_waits_for_every_source() {
+        let Ok(enc) = AacEncoder::new(128) else { return }; // No codec on this machine.
+        let mut m = Mixer { track: 1, enc, pcm: vec![Vec::new(); 3], ends: vec![0; 3], base: 0, gains: vec![100; 3], count: 0 };
+        let mut out = Vec::new();
+        m.put(0, 0, &vec![1000i16; 4800 * 2]);
+        m.put(1, 0, &vec![1000i16; 4800 * 2]);
+        m.drain(false, &mut out).unwrap();
+        assert_eq!(m.base, 0, "voice chat has not arrived yet");
+        m.put(2, 0, &vec![1000i16; 1200 * 2]);
+        m.drain(false, &mut out).unwrap();
+        assert_eq!(m.base, 1200);
+    }
+
+    #[test]
     fn mixer_waits_for_both_sources_then_flushes() {
         let Ok(enc) = AacEncoder::new(128) else { return }; // No codec on this machine.
-        let mut m = Mixer { track: 1, enc, pcm: [Vec::new(), Vec::new()], ends: [0, 0], base: 0, gains: [100, 100], count: 0 };
+        let mut m = Mixer { track: 1, enc, pcm: vec![Vec::new(), Vec::new()], ends: vec![0, 0], base: 0, gains: vec![100, 100], count: 0 };
         let mut out = Vec::new();
         m.put(0, 0, &vec![1000i16; 4800 * 2]);
         m.drain(false, &mut out).unwrap();

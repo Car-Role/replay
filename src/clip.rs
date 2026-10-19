@@ -1,8 +1,9 @@
 //! Turns ring snapshots into an MP4 file.
 //!
-//! Track layout: video, then "Game + Mic" (mixed, default), "Game",
-//! "Microphone". Sites such as Discord and Streamable play only the first
-//! audio track, so the mix comes first; editors still get separate tracks.
+//! Track layout: video, then the mix ("Game + Mic", default), "Game",
+//! "Microphone" and "Voice chat". Sites such as Discord and Streamable play
+//! only the first audio track, so the mix comes first; editors still get
+//! separate tracks.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -16,12 +17,28 @@ use crate::mux::mp4::{self, SampleInfo, Track, TrackKind, VIDEO_TIMESCALE};
 use crate::ring::{Packet, TICKS_PER_SEC, Ticks};
 use crate::config::Codec;
 
+/// The separate audio tracks ("stems"), in file order: game, mic, voice chat.
+pub const STEMS: [&str; 3] = ["Game", "Microphone", "Voice chat"];
+/// Their short names, used to name the mixed track ("Game + Mic").
+const SHORT: [&str; 3] = ["Game", "Mic", "Voice"];
+
+/// The name of the mixed track made from the stems in `present`.
+pub fn mix_name(present: &[usize]) -> String {
+    present.iter().map(|&i| SHORT[i]).collect::<Vec<_>>().join(" + ")
+}
+
+/// True for a track name that is a mix or music rather than one stem.
+pub fn is_mix_name(name: &str) -> bool {
+    name.contains(" + ") || name == "Mix" || name == "Music"
+}
+
 pub struct ClipSource {
     pub game_name: String,
     pub video: Vec<Packet>,
     pub state: VideoState,
     pub game_audio: Option<Vec<Packet>>,
     pub mic: Option<Vec<Packet>>,
+    pub voice: Option<Vec<Packet>>,
 }
 
 pub struct AudioOptions {
@@ -29,6 +46,7 @@ pub struct AudioOptions {
     pub mixed_track: bool,
     pub game_volume: u32,
     pub mic_volume: u32,
+    pub voice_volume: u32,
 }
 
 impl AudioOptions {
@@ -38,7 +56,13 @@ impl AudioOptions {
             mixed_track: cfg.audio.mixed_track,
             game_volume: cfg.audio.game_volume,
             mic_volume: cfg.audio.microphone_volume,
+            voice_volume: cfg.audio.voice_chat_volume,
         }
+    }
+
+    /// Gains of the stems, in `STEMS` order.
+    pub fn gains(&self) -> [u32; 3] {
+        [self.game_volume, self.mic_volume, self.voice_volume]
     }
 }
 
@@ -81,7 +105,7 @@ fn audio_from_ring(name: &str, packets: &[Packet], t0: Ticks, t_end: Ticks) -> O
 }
 
 /// Decodes AAC tracks, mixes them with gains, and encodes a new track.
-pub fn mix_tracks(tracks: &[(&AudioTrackData, u32)], bitrate_kbps: u32) -> Result<AudioTrackData, String> {
+pub fn mix_tracks(name: &str, tracks: &[(&AudioTrackData, u32)], bitrate_kbps: u32) -> Result<AudioTrackData, String> {
     let asc = aac_asc(SAMPLE_RATE, CHANNELS);
     let mut mixed: Vec<i16> = Vec::new();
     for (i, (t, gain)) in tracks.iter().enumerate() {
@@ -99,7 +123,7 @@ pub fn mix_tracks(tracks: &[(&AudioTrackData, u32)], bitrate_kbps: u32) -> Resul
         let base_gain = if i == 0 { 0 } else { 100 };
         mix_into(dst, &pcm, base_gain, *gain);
     }
-    encode_track("Game + Mic", &mixed, bitrate_kbps)
+    encode_track(name, &mixed, bitrate_kbps)
 }
 
 /// Writes a clip from ring snapshots. Returns the file path.
@@ -110,19 +134,23 @@ pub fn write_clip(src: ClipSource, output_dir: &Path, opts: &AudioOptions) -> Re
     let frame = TICKS_PER_SEC / i64::from(src.state.fps.max(1));
     let t_end = video.last().map(|p| p.pts + frame).unwrap_or(t0);
 
-    let game = src.game_audio.as_deref().and_then(|p| audio_from_ring("Game", p, t0, t_end));
-    let mic = src.mic.as_deref().and_then(|p| audio_from_ring("Microphone", p, t0, t_end));
+    let rings = [&src.game_audio, &src.mic, &src.voice];
+    let stems: Vec<(usize, AudioTrackData)> = rings
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| r.as_deref().and_then(|p| audio_from_ring(STEMS[i], p, t0, t_end)).map(|a| (i, a)))
+        .collect();
     let mut audio = Vec::new();
-    if opts.mixed_track
-        && let (Some(g), Some(m)) = (&game, &mic)
-    {
-        match mix_tracks(&[(g, opts.game_volume), (m, opts.mic_volume)], opts.bitrate_kbps) {
+    if opts.mixed_track && stems.len() > 1 {
+        let gains = opts.gains();
+        let parts: Vec<(&AudioTrackData, u32)> = stems.iter().map(|(i, a)| (a, gains[*i])).collect();
+        let present: Vec<usize> = stems.iter().map(|(i, _)| *i).collect();
+        match mix_tracks(&mix_name(&present), &parts, opts.bitrate_kbps) {
             Ok(mix) => audio.push(mix),
             Err(e) => log::warn!("audio mix failed, saving separate tracks only: {e}"),
         }
     }
-    audio.extend(game);
-    audio.extend(mic);
+    audio.extend(stems.into_iter().map(|(_, a)| a));
 
     let path = clip_path(output_dir, &src.game_name);
     let samples: Vec<VideoSample> = video
@@ -257,4 +285,22 @@ pub fn write_mp4(path: &Path, state: &VideoState, video: &[VideoSample], audio: 
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mixed_track_names() {
+        assert_eq!(mix_name(&[0, 1]), "Game + Mic");
+        assert_eq!(mix_name(&[0, 1, 2]), "Game + Mic + Voice");
+        assert_eq!(mix_name(&[0, 2]), "Game + Voice");
+        for name in ["Game + Mic", "Game + Voice", "Mix", "Music"] {
+            assert!(is_mix_name(name), "{name}");
+        }
+        for name in STEMS {
+            assert!(!is_mix_name(name), "{name}");
+        }
+    }
 }

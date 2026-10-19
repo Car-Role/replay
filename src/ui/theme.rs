@@ -189,6 +189,7 @@ pub mod icon {
     pub const VIDEO: char = '\u{E714}';
     pub const VOLUME: char = '\u{E767}';
     pub const MIC: char = '\u{E720}';
+    pub const PEOPLE: char = '\u{E716}';
     pub const GAME: char = '\u{E7FC}';
     pub const KEYBOARD: char = '\u{E765}';
     pub const SHARE: char = '\u{E72D}';
@@ -730,6 +731,12 @@ pub fn caution(ui: &mut Ui, t: &Tokens, icons: bool, text: &str, action: Option<
             }
         });
     clicked
+}
+
+/// "voice chat" -> "Voice chat".
+pub fn sentence_case(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 /// A 32 px subtle icon button (no fill or edge until hover).

@@ -136,6 +136,10 @@ pub struct AudioConfig {
     pub bitrate_kbps: u32,
     /// Adds a first track with game and microphone mixed together.
     pub mixed_track: bool,
+    /// Records voice chat apps (Discord) on their own track.
+    pub voice_chat: bool,
+    /// Voice chat gain in the mixed track, in percent.
+    pub voice_chat_volume: u32,
 }
 
 impl Default for AudioConfig {
@@ -148,6 +152,8 @@ impl Default for AudioConfig {
             game_volume: 100,
             bitrate_kbps: 192,
             mixed_track: true,
+            voice_chat: false,
+            voice_chat_volume: 100,
         }
     }
 }
@@ -473,12 +479,10 @@ impl Config {
         u64::from(self.video.bitrate_kbps + audio) * 125 * secs
     }
 
-    /// Memory of the shared microphone buffer, in bytes.
+    /// Memory of the shared microphone and voice chat buffers, in bytes.
     pub fn mic_buffer_bytes(&self) -> u64 {
-        if !self.audio.microphone {
-            return 0;
-        }
-        u64::from(self.audio.bitrate_kbps) * 125 * (u64::from(self.max_replay_seconds()) + 2)
+        let shared = u64::from(self.audio.microphone) + u64::from(self.audio.voice_chat);
+        shared * u64::from(self.audio.bitrate_kbps) * 125 * (u64::from(self.max_replay_seconds()) + 2)
     }
 
     /// Estimated memory of the recorder while `exes` record at once.

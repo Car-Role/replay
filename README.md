@@ -24,7 +24,7 @@ Replay keeps the last minutes of every game in memory, encoded by your graphics 
 
 - **Always ready.** A replay buffer for every game it finds, and full session recording with <kbd>Alt</kbd>+<kbd>F9</kbd>.
 - **Finds your games.** Launchers, game folders, the Game Bar list and fullscreen apps. Several at once, each with its own quality.
-- **Clean audio.** Game sound only (no Discord or music), your mic on its own track, and a mix.
+- **Clean audio.** Game sound only (no Discord or music), your mic on its own track, and a mix. Turn on **Voice chat** to add Discord on a track of its own.
 - **Edit fast.** Filmstrip trimming, exact-frame cuts, joins, volume per track, montages with music.
 - **Share anywhere.** Copies sized for Discord, vertical 9:16, or a link from Streamable, Catbox, Litterbox or a ShareX uploader.
 - **Light.** AV1, HEVC or H.264 on NVIDIA, AMD and Intel encoders. Webcam overlay, HDR to SDR, storage limits.
