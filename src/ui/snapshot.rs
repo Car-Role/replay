@@ -16,6 +16,7 @@ use super::{ClipDialog, LibraryApp, Page};
 #[derive(Clone, Copy, Debug)]
 enum Step {
     Clips,
+    TileHover,
     ClipsByGame,
     Selecting,
     Editor,
@@ -35,8 +36,9 @@ enum Step {
     Empty,
 }
 
-const STEPS: [(Step, &str); 18] = [
+const STEPS: [(Step, &str); 19] = [
     (Step::Clips, "01-clips"),
+    (Step::TileHover, "01b-tile-hover-on-star"),
     (Step::ClipsByGame, "02-clips-by-game"),
     (Step::Selecting, "03-clips-selecting"),
     (Step::Editor, "04-editor"),
@@ -62,11 +64,16 @@ pub struct Snapshot {
     entered: Option<Instant>,
     requested: bool,
     saved: Arc<AtomicBool>,
+    /// A pointer position fed to the app as input (hover states, no real mouse).
+    pub(super) hover: Option<egui::Pos2>,
+    /// Frames counted while hovering, and how many showed the hover buttons.
+    frames: u32,
+    lit: u32,
 }
 
 impl Snapshot {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir, index: 0, entered: None, requested: false, saved: Arc::new(AtomicBool::new(false)) }
+        Self { dir, index: 0, entered: None, requested: false, saved: Arc::new(AtomicBool::new(false)), hover: None, frames: 0, lit: 0 }
     }
 }
 
@@ -93,13 +100,28 @@ impl LibraryApp {
             Some(t) => t,
             None => {
                 snap.entered = Some(Instant::now());
+                snap.hover = None;
                 self.enter(ctx, step);
                 return;
             }
         };
+        // Hold the pointer on the first tile's star, the button that flickered.
+        if matches!(step, Step::TileHover) {
+            let at = self.gallery.probe_star.map(|(_, r)| r.center());
+            let lit = self.gallery.probe_lit;
+            if let Some(s) = self.snapshot.as_mut() {
+                // Count from the second half of the step, once the pointer has settled.
+                if s.hover.is_some() && entered.elapsed() > Duration::from_millis(500) {
+                    s.frames += 1;
+                    s.lit += u32::from(lit);
+                }
+                s.hover = at;
+            }
+        }
         // The first page waits for thumbnails; the editor for its first frame.
         let settle = match step {
             Step::Clips => 3500,
+            Step::TileHover => 1500,
             Step::Editor => 6000,
             Step::EditorVertical => 1500,
             Step::Compact => 1200,
@@ -114,6 +136,9 @@ impl LibraryApp {
             return;
         }
         let snap = self.snapshot.as_mut().expect("set");
+        if matches!(step, Step::TileHover) {
+            println!("tile hover: buttons shown in {} of {} frames", snap.lit, snap.frames);
+        }
         let path = snap.dir.join(format!("{name}.png"));
         let saved = snap.saved.clone();
         snap.requested = true;
@@ -135,7 +160,7 @@ impl LibraryApp {
         self.gallery.group = super::clips::Group::Day;
         let first_clip = self.clips.first().map(|c| c.path.clone());
         match step {
-            Step::Clips => self.page = Page::Clips,
+            Step::Clips | Step::TileHover => self.page = Page::Clips,
             Step::ClipsByGame => self.gallery.group = super::clips::Group::Game,
             Step::Selecting => {
                 self.page = Page::Clips;

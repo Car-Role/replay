@@ -223,7 +223,8 @@ impl LibraryApp {
         let (clips, bytes) = self.game_clips(g);
         let own = self.shared.cfg.games.contains_key(&g.exe);
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 64.0), Sense::click());
-        let hovered = resp.hovered();
+        // Stays lit over the row's own switch too.
+        let hovered = resp.contains_pointer();
         ui.painter().rect(rect, CornerRadius::same(theme::R_CONTROL), if hovered { t.card_hover } else { t.card }, Stroke::new(1.0, t.card_stroke), StrokeKind::Inside);
         let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(16.0, 8.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
         let mut click = None;

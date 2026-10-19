@@ -1109,6 +1109,13 @@ fn export_joined(segments: &[crate::edit::Segment], out: &Path, mix: &crate::edi
 }
 
 impl eframe::App for LibraryApp {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // `--snapshot` hover steps: a synthetic pointer, never the real mouse.
+        if let Some(p) = self.snapshot.as_ref().and_then(|s| s.hover) {
+            raw.events.push(egui::Event::PointerMoved(p));
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let t = theme::tokens(&ctx);

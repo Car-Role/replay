@@ -69,11 +69,15 @@ pub struct Gallery {
     pub tile: f32,
     /// Anchor for Shift-click range selection.
     anchor: Option<PathBuf>,
+    /// The first tile's star button this frame (for `--snapshot` hover tests).
+    pub probe_star: Option<(u64, Rect)>,
+    /// Whether that tile showed its hover buttons this frame.
+    pub probe_lit: bool,
 }
 
 impl Default for Gallery {
     fn default() -> Self {
-        Self { filter: String::new(), checked: HashSet::new(), sort: Sort::Newest, group: Group::Day, chip: Chip::All, tile: 260.0, anchor: None }
+        Self { filter: String::new(), checked: HashSet::new(), sort: Sort::Newest, group: Group::Day, chip: Chip::All, tile: 260.0, anchor: None, probe_star: None, probe_lit: false }
     }
 }
 
@@ -415,7 +419,9 @@ impl LibraryApp {
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, thumb_h + 56.0), Sense::click());
         let checked = self.gallery.checked.contains(&c.path);
         let selecting = !self.gallery.checked.is_empty();
-        let hovered = resp.hovered();
+        // The pointer anywhere on the tile, also over its own buttons: with
+        // `hovered()` the buttons take the hover, vanish, and flicker.
+        let hovered = resp.contains_pointer();
         let p = ui.painter_at(rect.expand(3.0));
         let img = Rect::from_min_size(rect.min, Vec2::new(w, thumb_h));
         let r = CornerRadius::same(theme::R_CONTROL);
@@ -478,6 +484,11 @@ impl LibraryApp {
 
         // Favorite star: always when set, else on hover.
         let star = Rect::from_min_size(Pos2::new(img.right() - 30.0, img.top() + 6.0), Vec2::splat(24.0));
+        let pass = ui.ctx().cumulative_pass_nr();
+        if self.gallery.probe_star.is_none_or(|(n, _)| n != pass) {
+            self.gallery.probe_star = Some((pass, star));
+            self.gallery.probe_lit = hovered;
+        }
         let mut star_clicked = false;
         if hovered || info.favorite {
             let sr = ui.interact(star, resp.id.with("star"), Sense::click());
