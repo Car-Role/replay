@@ -474,7 +474,7 @@ impl LibraryApp {
         // Bottom: capture status, then Settings at the very bottom.
         let r = ui.max_rect();
         let bottom = r.bottom() - 8.0;
-        let status_h = if compact { 120.0 } else { 144.0 };
+        let status_h = if compact { 120.0 } else { 152.0 };
         let area = Rect::from_min_max(Pos2::new(r.left(), bottom - 40.0 - status_h), Pos2::new(r.right(), bottom));
         let mut b = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
         b.spacing_mut().item_spacing.y = 4.0;
@@ -504,62 +504,54 @@ impl LibraryApp {
             (t.text3, "Waiting for a game".to_string(), "Start a game to begin".to_string())
         };
         let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
-        let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(0.0, 4.0))).layout(egui::Layout::top_down(egui::Align::Min)));
+        // A divider sets the status apart from the pages above.
+        ui.painter().line_segment([Pos2::new(rect.left() + 8.0, rect.top()), Pos2::new(rect.right() - 8.0, rect.top())], Stroke::new(1.0, t.divider));
+        let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(0.0, 8.0))).layout(egui::Layout::top_down(egui::Align::Min)));
         let ui = &mut inner;
         ui.spacing_mut().item_spacing.y = 6.0;
         let pulse = if capturing.is_empty() { 1.0 } else { 0.55 + 0.45 * ((ui.input(|i| i.time) * 3.0).sin() as f32 * 0.5 + 0.5) };
         if !capturing.is_empty() {
             ui.ctx().request_repaint_after(Duration::from_millis(50));
         }
+        // Status lines use the rail's icon and label columns (22 and 44 px).
+        let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), if compact { 20.0 } else { 40.0 }), Sense::hover());
         if compact {
-            let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), Sense::hover());
             ui.painter().circle_filled(r.center(), 5.0, dot.gamma_multiply(pulse));
-            resp.on_hover_text(format!("{line}\n{sub}"));
         } else {
-            ui.horizontal(|ui| {
-                ui.add_space(12.0);
-                let (r, _) = ui.allocate_exact_size(Vec2::new(10.0, 20.0), Sense::hover());
-                ui.painter().circle_filled(r.center(), 5.0, dot.gamma_multiply(pulse));
-                ui.label(theme::body_strong(&line).color(t.text));
-            });
-            ui.horizontal(|ui| {
-                ui.add_space(30.0);
-                ui.add(egui::Label::new(theme::caption(&sub).color(t.text2)).truncate());
-            });
+            ui.painter().circle_filled(Pos2::new(r.left() + 22.0, r.top() + 10.0), 5.0, dot.gamma_multiply(pulse));
+            ui.painter().text(Pos2::new(r.left() + 44.0, r.top() + 10.0), Align2::LEFT_CENTER, &line, egui::FontId::new(14.0, egui::FontFamily::Name(theme::SEMIBOLD.into())), t.text);
+            let mut job = egui::text::LayoutJob::single_section(sub.clone(), egui::TextFormat::simple(egui::FontId::proportional(12.0), t.text2));
+            job.wrap = egui::text::TextWrapping::truncate_at_width(r.width() - 52.0);
+            let g = ui.painter().layout_job(job);
+            ui.painter().galley(Pos2::new(r.left() + 44.0, r.top() + 22.0), g, t.text2);
         }
-        let w = ui.available_width();
-        let hint_save = format!("Save the replay ({})", self.shared.cfg.hotkeys.save_focused);
-        let hint_rec = format!("Record the whole session ({})", self.shared.cfg.hotkeys.record);
+        resp.on_hover_text(format!("{line}\n{sub}"));
+        let save_key = self.shared.cfg.hotkeys.save_focused.clone();
+        let rec_key = self.shared.cfg.hotkeys.record.clone();
         if !self.recorder_running {
-            if theme::button_w(ui, theme::label_with_icon(icons, icon::POWER, if compact { "" } else { "Start recorder" }), w).on_hover_text("Start recording games").clicked()
+            if theme::rail_button(ui, t, icons, icon::POWER, "Start recorder", "", t.text, true, compact).on_hover_text("Start recording games").clicked()
                 && let Ok(exe) = std::env::current_exe()
             {
                 let _ = std::process::Command::new(exe).spawn();
                 self.recorder_checked = Instant::now() - Duration::from_secs(1);
             }
         } else if !capturing.is_empty() {
-            let text = theme::label_with_icon(icons, icon::STOP, if compact { "" } else { "Stop recording" }).color(t.recording);
-            if theme::button_w(ui, text, w).on_hover_text("Finish the recording and save it").clicked() {
+            if theme::rail_button(ui, t, icons, icon::STOP, "Stop recording", &rec_key, t.recording, true, compact).on_hover_text("Finish the recording and save it").clicked() {
                 crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::Record);
                 self.recorder_checked = Instant::now() - Duration::from_millis(800);
             }
         } else {
             let ready = !buffering.is_empty();
-            // The app's main action: the accent button while a replay is ready.
-            let label = if compact { String::new() } else { format!("Save replay  \u{00b7}  {}", self.shared.cfg.hotkeys.save_focused) };
-            let save = egui::Button::new(theme::icon_label(icons, icon::SAVE, &label, if ready { t.on_accent } else { t.text_disabled }))
-                .fill(if ready { t.accent } else { t.control })
-                .stroke(Stroke::NONE)
-                .min_size(Vec2::new(w, theme::CONTROL_H));
-            if ui.add_enabled(ready, save).on_hover_text(&hint_save).on_disabled_hover_text("No game is running").clicked() {
+            let r = theme::rail_button(ui, t, icons, icon::SAVE, "Save replay", &save_key, t.accent, ready, compact);
+            if r.on_hover_text(format!("Save the replay ({save_key})")).clicked() {
                 if crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::Save(false)) {
                     self.shared.toast("Saving the replay\u{2026}", false);
                 } else {
                     self.shared.toast("The recorder is not running.", true);
                 }
             }
-            let rec = theme::label_with_icon(icons, icon::RECORD, if compact { "" } else { "Record session" });
-            if ui.add_enabled(ready, egui::Button::new(rec).frame_when_inactive(false).min_size(Vec2::new(w, theme::CONTROL_H))).on_hover_text(&hint_rec).clicked() {
+            let r = theme::rail_button(ui, t, icons, icon::RECORD, "Record session", &rec_key, t.recording, ready, compact);
+            if r.on_hover_text(format!("Record the whole session ({rec_key})")).clicked() {
                 crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::Record);
                 self.recorder_checked = Instant::now() - Duration::from_millis(800);
             }
@@ -695,11 +687,10 @@ impl LibraryApp {
                         .show(ui, |ui| {
                             ui.columns(2, |cols| {
                                 let w = cols[0].available_width();
-                                let b = egui::Button::new(RichText::new(primary).color(t.on_accent)).fill(t.accent).stroke(Stroke::NONE).min_size(Vec2::new(w, theme::CONTROL_H));
-                                if cols[0].add(b).clicked() {
+                                if theme::button_centered(&mut cols[0], t, primary, w, true).clicked() {
                                     result = Some(true);
                                 }
-                                if cols[1].add(egui::Button::new("Cancel").min_size(Vec2::new(w, theme::CONTROL_H))).clicked() {
+                                if theme::button_centered(&mut cols[1], t, "Cancel", w, false).clicked() {
                                     result = Some(false);
                                 }
                             });
@@ -798,6 +789,17 @@ impl LibraryApp {
 
     /// The montage dialog.
     fn montage_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let Some(paths) = self.montage.as_ref().map(|m| m.clips.clone()) else { return };
+        // Per clip: thumbnail, short title and length.
+        let rows: HashMap<PathBuf, (Option<egui::TextureId>, String, f64)> = paths
+            .iter()
+            .map(|p| {
+                let entry = self.clips.iter().find(|c| &c.path == p).cloned();
+                let tex = self.thumb(p).map(|t| t.id());
+                let (game, dur) = entry.map(|c| (c.game, c.duration)).unwrap_or_default();
+                (p.clone(), (tex, clips::friendly_title(p, &game), dur))
+            })
+            .collect();
         let Some(m) = &mut self.montage else { return };
         let icons = self.shared.icons;
         let result = Self::content_dialog(ctx, t, 560.0, "Make a montage", "Create montage", |ui| {
@@ -808,9 +810,15 @@ impl LibraryApp {
             let n = m.clips.len();
             egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
                 for (i, p) in m.clips.iter().enumerate() {
+                    let (tex, title, dur) = rows.get(p).cloned().unwrap_or((None, String::new(), 0.0));
                     ui.horizontal(|ui| {
-                        ui.add_sized(Vec2::new(24.0, 32.0), egui::Label::new(theme::caption(format!("{}", i + 1)).color(t.text2)));
-                        let name = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                        ui.add_sized(Vec2::new(20.0, 36.0), egui::Label::new(theme::caption(format!("{}", i + 1)).color(t.text2)));
+                        let (tr, _) = ui.allocate_exact_size(Vec2::new(64.0, 36.0), Sense::hover());
+                        ui.painter().rect_filled(tr, CornerRadius::same(theme::R_CONTROL), t.card);
+                        if let Some(id) = tex {
+                            ui.painter().image(id, tr, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), egui::Color32::WHITE);
+                        }
+                        let name = format!("{title}  \u{00b7}  {}", theme::fmt_short(dur));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let btn = |ui: &mut egui::Ui, c: char, alt: &str, enabled: bool| {
                                 ui.add_enabled(enabled, egui::Button::new(theme::label_with_icon(icons, c, if icons { "" } else { alt })).frame_when_inactive(false).min_size(Vec2::splat(theme::CONTROL_H)))
@@ -831,6 +839,9 @@ impl LibraryApp {
                     });
                 }
             });
+            let total: f64 = m.clips.iter().filter_map(|p| rows.get(p)).map(|r| r.2).sum();
+            ui.add_space(4.0);
+            ui.label(theme::caption(format!("{} clips  \u{00b7}  {} in total", m.clips.len(), theme::fmt_short(total))).color(t.text2));
             if let Some((a, b)) = swap {
                 m.clips.swap(a, b);
             }
@@ -841,9 +852,12 @@ impl LibraryApp {
             }
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Music").color(t.text));
-                let label = m.music.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "None".into());
-                ui.add(egui::Label::new(theme::caption(label).color(t.text2)).truncate());
+                let label = m.music.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "No music".into());
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(RichText::new("Music").color(t.text));
+                    ui.add(egui::Label::new(theme::caption(label).color(t.text2)).truncate());
+                });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if m.music.is_some() && theme::subtle(ui, "Remove").clicked() {
                         m.music = None;
@@ -858,13 +872,12 @@ impl LibraryApp {
             ui.add_space(6.0);
             egui::Grid::new("montage-mix").num_columns(3).spacing([12.0, 8.0]).show(ui, |ui| {
                 ui.label(RichText::new("Game sound").color(t.text));
-                ui.spacing_mut().slider_width = 320.0;
-                ui.add(egui::Slider::new(&mut m.game_volume, 0..=200).show_value(false));
+                theme::slider(ui, t, &mut m.game_volume, 0..=200, false, 320.0);
                 ui.label(theme::caption(format!("{}%", m.game_volume)).color(t.text2));
                 ui.end_row();
                 if m.music.is_some() {
                     ui.label(RichText::new("Music").color(t.text));
-                    ui.add(egui::Slider::new(&mut m.music_volume, 0..=100).show_value(false));
+                    theme::slider(ui, t, &mut m.music_volume, 0..=100, false, 320.0);
                     ui.label(theme::caption(format!("{}%", m.music_volume)).color(t.text2));
                     ui.end_row();
                     ui.label(RichText::new("Fade out at the end").color(t.text));

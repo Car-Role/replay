@@ -209,6 +209,13 @@ pub mod icon {
     pub const CHEVRON_RIGHT: char = '\u{E76C}';
     pub const CHEVRON_DOWN: char = '\u{E70D}';
     pub const CHEVRON_UP: char = '\u{E70E}';
+    pub const STOPWATCH: char = '\u{E916}';
+    pub const MONITOR: char = '\u{E7F4}';
+    pub const PICTURE: char = '\u{E8B9}';
+    pub const MOUSE: char = '\u{E962}';
+    pub const BRIGHTNESS: char = '\u{E706}';
+    pub const GAUGE: char = '\u{E9D9}';
+    pub const OPEN: char = '\u{E8A7}';
     pub const UP: char = '\u{E74A}';
     pub const DOWN: char = '\u{E74B}';
     pub const EDIT: char = '\u{E70F}';
@@ -561,9 +568,9 @@ pub fn button_w(ui: &mut Ui, text: impl Into<WidgetText>, w: f32) -> Response {
 
 /// A filter chip: rounded, accent-filled when on.
 pub fn chip(ui: &mut Ui, t: &Tokens, text: impl Into<String>, on: bool) -> Response {
-    let b = egui::Button::new(RichText::new(text).size(14.0).color(if on { t.on_accent } else { t.text }))
-        .fill(if on { t.accent } else { t.control })
-        .stroke(if on { Stroke::NONE } else { Stroke::new(1.0, t.control_stroke) })
+    let b = egui::Button::new(RichText::new(text).size(14.0).color(t.text))
+        .fill(if on { if t.dark { argb(0xFF3A_3A3A) } else { argb(0xFFE6_E6E6) } } else { t.control })
+        .stroke(if on { Stroke::new(1.0, t.accent) } else { Stroke::new(1.0, t.control_stroke) })
         .corner_radius(CornerRadius::same(14))
         .min_size(Vec2::new(0.0, 30.0));
     ui.add(b)
@@ -580,11 +587,115 @@ pub fn combo<'a>(id: impl egui::AsIdSalt + std::fmt::Debug) -> egui::ComboBox<'a
     })
 }
 
-/// A slider with its value in a fixed-width box, filling the control column.
-pub fn slider_row(ui: &mut Ui, t: &Tokens, value: String, slider: egui::Slider) -> Response {
-    ui.add_sized(Vec2::new(60.0, 20.0), egui::Label::new(RichText::new(value).color(t.text2)));
-    ui.spacing_mut().slider_width = CONTROL_COL - 68.0;
-    ui.add(slider.show_value(false))
+/// A slider with its value right-aligned in a fixed box, filling the
+/// control column.
+pub fn slider_row(ui: &mut Ui, t: &Tokens, value: String, v: &mut u32, range: std::ops::RangeInclusive<u32>, log: bool) -> Response {
+    ui.allocate_ui_with_layout(Vec2::new(60.0, 20.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.label(RichText::new(value).color(t.text2));
+    });
+    slider(ui, t, v, range, log, CONTROL_COL - 68.0)
+}
+
+/// Fluent slider: a 4 px rail (accent up to the thumb, neutral after) and a
+/// 20 px dark thumb with an accent dot that grows on hover.
+pub fn slider(ui: &mut Ui, t: &Tokens, v: &mut u32, range: std::ops::RangeInclusive<u32>, log: bool, width: f32) -> Response {
+    let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::click_and_drag());
+    let (lo, hi) = (f64::from(*range.start()), f64::from(*range.end()).max(f64::from(*range.start()) + 1.0));
+    let to_t = |x: f64| if log { (x.max(lo).ln() - lo.max(1.0).ln()) / (hi.ln() - lo.max(1.0).ln()) } else { (x - lo) / (hi - lo) };
+    let from_t = |f: f64| if log { (lo.max(1.0).ln() + f * (hi.ln() - lo.max(1.0).ln())).exp() } else { lo + f * (hi - lo) };
+    let (x0, x1) = (rect.left() + 10.0, rect.right() - 10.0);
+    if resp.is_pointer_button_down_on()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let f = f64::from((p.x - x0) / (x1 - x0)).clamp(0.0, 1.0);
+        let nv = from_t(f).round().clamp(lo, hi) as u32;
+        if nv != *v {
+            *v = nv;
+            resp.mark_changed();
+        }
+    }
+    if resp.has_focus() {
+        let step = ((hi - lo) / 100.0).max(1.0);
+        let (l, r) = ui.input(|i| (i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight)));
+        if l || r {
+            let nv = (f64::from(*v) + if r { step } else { -step }).round().clamp(lo, hi) as u32;
+            if nv != *v {
+                *v = nv;
+                resp.mark_changed();
+            }
+        }
+    }
+    let f = to_t(f64::from(*v)).clamp(0.0, 1.0) as f32;
+    let cx = x0 + (x1 - x0) * f;
+    let cy = rect.center().y;
+    let p = ui.painter();
+    let rail = |a: f32, b: f32, c: Color32| p.rect_filled(egui::Rect::from_min_max(egui::pos2(a, cy - 2.0), egui::pos2(b, cy + 2.0)), 2.0, c);
+    rail(x0, x1, if t.dark { argb(0xFF8A_8A8A) } else { argb(0xFF86_8686) });
+    rail(x0, cx, if ui.is_enabled() { t.accent } else { t.text_disabled });
+    let outer = if t.dark { argb(0xFF45_4545) } else { argb(0xFFFF_FFFF) };
+    p.circle(egui::pos2(cx, cy), 10.0, outer, Stroke::new(1.0, t.control_stroke));
+    let inner = if resp.is_pointer_button_down_on() { 5.0 } else if resp.hovered() { 7.0 } else { 6.0 };
+    p.circle_filled(egui::pos2(cx, cy), inner, if ui.is_enabled() { t.accent } else { t.text_disabled });
+    focus_ring(ui, t, &resp, rect, 4.0);
+    let value = f64::from(*v);
+    resp.widget_info(|| egui::WidgetInfo::slider(true, value, ""));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A fixed-width button with its label centred (dialog footers).
+pub fn button_centered(ui: &mut Ui, t: &Tokens, text: &str, w: f32, primary: bool) -> Response {
+    let (r, resp) = ui.allocate_exact_size(Vec2::new(w, CONTROL_H), Sense::click());
+    let hovered = resp.hovered();
+    let (fill, stroke, color) = if primary {
+        (if hovered { t.accent_hover } else { t.accent }, Stroke::NONE, t.on_accent)
+    } else {
+        (if hovered { t.control_hover } else { t.control }, Stroke::new(1.0, t.edge), t.text)
+    };
+    ui.painter().rect(r, R_CONTROL, fill, stroke, egui::StrokeKind::Inside);
+    ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, text, FontId::proportional(14.0), color);
+    focus_ring(ui, t, &resp, r, f32::from(R_CONTROL));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A button in the navigation rail, laid out like `nav_item` (icon at 14 px,
+/// label at 44 px) so the rail keeps one icon and one label column. `right`
+/// is a quiet hint at the right edge (a hotkey).
+#[allow(clippy::too_many_arguments)]
+pub fn rail_button(ui: &mut Ui, t: &Tokens, icons: bool, c: char, label: &str, right: &str, icon_color: Color32, enabled: bool, compact: bool) -> Response {
+    let w = ui.available_width();
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 36.0), sense);
+    let fill = if !enabled {
+        t.control_pressed
+    } else if resp.is_pointer_button_down_on() {
+        t.control_pressed
+    } else if resp.hovered() {
+        t.control_hover
+    } else {
+        t.control
+    };
+    let p = ui.painter();
+    p.rect(rect, R_CONTROL, fill, Stroke::new(1.0, t.control_stroke), egui::StrokeKind::Inside);
+    let fg = if enabled { t.text } else { t.text_disabled };
+    let ic = if enabled { icon_color } else { t.text_disabled };
+    let icon_font = FontId::new(16.0, FontFamily::Name(ICONS.into()));
+    if compact {
+        if icons {
+            p.text(rect.center(), egui::Align2::CENTER_CENTER, c, icon_font, ic);
+        }
+    } else {
+        if icons {
+            p.text(egui::pos2(rect.left() + 14.0, rect.center().y), egui::Align2::LEFT_CENTER, c, icon_font, ic);
+        }
+        p.text(egui::pos2(rect.left() + 44.0, rect.center().y), egui::Align2::LEFT_CENTER, label, FontId::proportional(14.0), fg);
+        if !right.is_empty() {
+            p.text(egui::pos2(rect.right() - 12.0, rect.center().y), egui::Align2::RIGHT_CENTER, right, FontId::proportional(12.0), t.text3);
+        }
+    }
+    focus_ring(ui, t, &resp, rect, f32::from(R_CONTROL));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
 
 /// A 2 px focus ring around `rect` when `resp` has keyboard focus.

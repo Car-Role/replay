@@ -50,11 +50,11 @@ impl Preset {
 
     fn label(self) -> &'static str {
         match self {
-            Preset::Discord10 => "10 MB",
-            Preset::Discord50 => "50 MB",
-            Preset::Discord500 => "500 MB",
-            Preset::Custom => "Custom",
-            Preset::Original => "Original",
+            Preset::Discord10 => "Discord (10 MB)",
+            Preset::Discord50 => "Discord Nitro Basic (50 MB)",
+            Preset::Discord500 => "Discord Nitro (500 MB)",
+            Preset::Custom => "Custom size",
+            Preset::Original => "Original quality",
         }
     }
 
@@ -585,7 +585,8 @@ impl Editor {
                 p.rect_filled(Rect::from_center_size(Pos2::new(x, keep.center().y), Vec2::new(8.0, 24.0)), CornerRadius::same(2), t.accent);
             }
             let tag = p.layout_no_wrap("Drag to frame".to_string(), FontId::proportional(12.0), Color32::WHITE);
-            let tr = Rect::from_center_size(Pos2::new(keep.center().x, keep.top() + 18.0), tag.size() + Vec2::new(12.0, 4.0));
+            p.rect_stroke(img, CornerRadius::ZERO, Stroke::new(1.0, Color32::from_white_alpha(40)), StrokeKind::Outside);
+            let tr = Rect::from_center_size(Pos2::new(keep.center().x, keep.top() + 8.0 + (tag.size().y + 4.0) / 2.0), tag.size() + Vec2::new(12.0, 4.0));
             p.rect_filled(tr, CornerRadius::same(theme::R_CONTROL), Color32::from_black_alpha(170));
             p.galley(tr.min + Vec2::new(6.0, 2.0), tag, Color32::WHITE);
             if resp.dragged()
@@ -850,15 +851,14 @@ impl Editor {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.set_min_height(ui.available_height());
-                egui::ScrollArea::vertical().id_salt("inspector").auto_shrink([false, false]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).show(ui, |ui| {
+                let out = egui::ScrollArea::vertical().id_salt("inspector").auto_shrink([false, false]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 8.0;
 
                     section(ui, t, "Trim", true, |ui| {
-                        egui::Grid::new("trim").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
-                            for (k, v) in [("Start", self.in_point), ("End", self.out_point), ("Length", self.out_point - self.in_point)] {
-                                ui.label(RichText::new(k).color(t.text2));
-                                ui.label(RichText::new(theme::fmt_time(v)).color(t.text));
-                                ui.end_row();
+                        ui.columns(3, |cols| {
+                            for (col, (k, v)) in cols.iter_mut().zip([("Start", self.in_point), ("End", self.out_point), ("Length", self.out_point - self.in_point)]) {
+                                col.label(theme::caption(k).color(t.text2));
+                                col.label(RichText::new(theme::fmt_time(v)).color(t.text));
                             }
                         });
                         ui.horizontal(|ui| {
@@ -872,10 +872,6 @@ impl Editor {
                         });
                     });
 
-                    section(ui, t, "Save", true, |ui| {
-                        self.export_section(ui, t, icons, shared, busy);
-                    });
-
                     section(ui, t, "Audio", true, |ui| {
                         let mut changed = false;
                         let mut row = |ui: &mut egui::Ui, c: char, label: &str, v: &mut u32| {
@@ -884,9 +880,11 @@ impl Editor {
                                     ui.label(theme::glyph(c, 16.0).color(t.text2));
                                 }
                                 ui.add_sized(Vec2::new(36.0, 20.0), egui::Label::new(RichText::new(label).color(t.text)));
-                                ui.spacing_mut().slider_width = (ui.available_width() - 48.0).max(60.0);
-                                changed |= ui.add(egui::Slider::new(v, 0..=200).show_value(false)).changed();
-                                ui.label(theme::caption(format!("{v}%")).color(t.text2));
+                                let w = (ui.available_width() - 52.0).max(60.0);
+                                changed |= theme::slider(ui, t, v, 0..=200, false, w).changed();
+                                ui.allocate_ui_with_layout(Vec2::new(40.0, 20.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(theme::caption(format!("{v}%")).color(t.text2));
+                                });
                             });
                         };
                         if self.has_game {
@@ -909,6 +907,10 @@ impl Editor {
                                 });
                             });
                         }
+                    });
+
+                    section(ui, t, "Save", true, |ui| {
+                        self.export_section(ui, t, icons, shared, busy);
                     });
 
                     section(ui, t, "Details", false, |ui| {
@@ -936,6 +938,15 @@ impl Editor {
                     ui.add_space(4.0);
                     ui.label(theme::caption("Space play  \u{00b7}  I / O start and end  \u{00b7}  \u{2190} \u{2192} frame  \u{00b7}  Shift 1 s").color(t.text3));
                 });
+                // More below: fade the last 24 px into the panel.
+                if out.state.offset().y + out.inner_rect.height() < out.content_size.y - 1.0 {
+                    let r = out.inner_rect;
+                    for i in 0..24 {
+                        let y = r.bottom() - 24.0 + i as f32;
+                        let a = (i as f32 / 24.0 * 255.0) as u8;
+                        ui.painter().line_segment([Pos2::new(r.left(), y), Pos2::new(r.right() - 8.0, y)], Stroke::new(1.0, t.card.gamma_multiply(f32::from(a) / 255.0)));
+                    }
+                }
             });
         None
     }
@@ -945,14 +956,11 @@ impl Editor {
     fn export_section(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared, busy: bool) {
         let ctx = ui.ctx().clone();
         let _ = &ctx;
-        // Size: chips in two rows.
         ui.label(theme::caption("Size").color(t.text2));
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+        let w = ui.available_width();
+        theme::combo("preset").width(w).selected_text(self.preset.label()).show_ui(ui, |ui| {
             for p in Preset::ALL {
-                if theme::chip(ui, t, p.label(), self.preset == p).on_hover_text(p.hint()).clicked() {
-                    self.preset = p;
-                }
+                ui.selectable_value(&mut self.preset, p, p.label()).on_hover_text(p.hint());
             }
         });
         if self.preset == Preset::Custom {
@@ -965,8 +973,14 @@ impl Editor {
         ui.label(theme::caption("Shape").color(t.text2));
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
+            let half = (ui.available_width() - 6.0) / 2.0;
             for (v, label, hint) in [(false, "Landscape", "As recorded"), (true, "Vertical 9:16", "For Shorts, TikTok and Reels")] {
-                if theme::chip(ui, t, label, self.vertical == v).on_hover_text(hint).clicked() {
+                let on = self.vertical == v;
+                let b = egui::Button::new(RichText::new(label).color(t.text))
+                    .fill(if on { if t.dark { Color32::from_gray(58) } else { Color32::from_gray(230) } } else { t.control })
+                    .stroke(Stroke::new(1.0, if on { t.accent } else { t.control_stroke }))
+                    .min_size(Vec2::new(half, theme::CONTROL_H));
+                if ui.add(b).on_hover_text(hint).clicked() {
                     self.vertical = v;
                 }
             }
@@ -1001,6 +1015,9 @@ impl Editor {
             format!("About {est_mb:.1} MB  \u{00b7}  {ow} x {oh}  \u{00b7}  H.264")
         };
         ui.label(theme::caption(line).color(t.text2));
+        if !copy {
+            ui.label(theme::caption("Encoded as H.264, so it plays on every phone and site.").color(t.text3));
+        }
         if !copy && spec.bitrate_kbps < 800 {
             ui.label(theme::caption("Long for this size, so the picture will be soft. Trim it shorter for a sharper clip.").color(t.caution));
         }

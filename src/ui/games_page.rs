@@ -120,8 +120,6 @@ impl LibraryApp {
         }
         let icons = self.shared.icons;
         let list = self.game_list();
-        // Header and rows share one column, so their right edges line up.
-        ui.set_max_width(ui.available_width().min(1000.0));
         ui.horizontal(|ui| {
             ui.label(theme::title("Games").color(t.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -173,18 +171,12 @@ impl LibraryApp {
         let mut toggle = None;
         let mut open = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_max_width(ui.available_width().min(1000.0));
-            ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.spacing_mut().item_spacing.y = 2.0;
             for (title, group) in [("Recording now", &recording), ("Your games", &on), ("Turned off", &off)] {
                 if group.is_empty() {
                     continue;
                 }
-                let first = std::ptr::eq(group, &recording) || (recording.is_empty() && std::ptr::eq(group, &on)) || (recording.is_empty() && on.is_empty());
-                if !first {
-                    ui.add_space(16.0);
-                }
-                ui.label(theme::body_strong(title).color(t.text));
-                ui.add_space(6.0);
+                theme::section(ui, t, title);
                 for g in group.iter() {
                     match self.game_row(ui, t, g) {
                         Some(RowClick::Toggle(v)) => toggle = Some((g.exe.clone(), g.name.clone(), v, g.how == "Added by you")),
@@ -280,7 +272,6 @@ impl LibraryApp {
             self.game_open = None;
         }
         ui.add_space(12.0);
-        ui.set_max_width(ui.available_width().min(1000.0));
         let current = self.shared.cfg.games.get(&g.exe).cloned().unwrap_or_default();
         let general = self.shared.cfg.clone();
         let mut s = current.clone();
@@ -288,9 +279,8 @@ impl LibraryApp {
         let mut forget = false;
         let mut show_clips = false;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_max_width(ui.available_width().min(1000.0));
-            ui.spacing_mut().item_spacing.y = 2.0;
-            theme::setting(ui, t, icons, Some(icon::GAME), "Record this game", "Keep a replay buffer while it runs", |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+            theme::setting(ui, t, false, Some(icon::GAME), "Record this game", "Keep a replay buffer while it runs", |ui| {
                 let mut v = enabled;
                 if theme::toggle(ui, t, &mut v).changed() {
                     toggle = Some(v);
@@ -299,7 +289,7 @@ impl LibraryApp {
 
             theme::section(ui, t, "Quality");
             let combo_w = theme::CONTROL_COL;
-            theme::setting(ui, t, icons, Some(icon::VIDEO), "Frame rate", "", |ui| {
+            theme::setting(ui, t, false, Some(icon::VIDEO), "Frame rate", "", |ui| {
                 let label = |v: Option<u32>| v.map(|f| format!("{f} fps")).unwrap_or_else(|| format!("Same as general ({} fps)", general.video.fps));
                 theme::combo("g-fps").width(combo_w).selected_text(label(s.fps)).show_ui(ui, |ui| {
                     ui.selectable_value(&mut s.fps, None, label(None));
@@ -308,7 +298,7 @@ impl LibraryApp {
                     }
                 });
             });
-            theme::setting(ui, t, icons, None, "Resolution", "", |ui| {
+            theme::setting(ui, t, false, None, "Resolution", "", |ui| {
                 let label = |v: Option<Resolution>| match v {
                     Some(r) => r.label().to_string(),
                     None => format!("Same as general ({})", general.video.resolution.label()),
@@ -320,7 +310,7 @@ impl LibraryApp {
                     }
                 });
             });
-            theme::setting(ui, t, icons, None, "Quality", "Lower uses less memory and disk", |ui| {
+            theme::setting(ui, t, false, None, "Quality", "Lower uses less memory and disk", |ui| {
                 let label = |v: Option<u32>| match v {
                     Some(k) => theme::fmt_mbps(k),
                     None => format!("Same as general ({})", theme::fmt_mbps(general.video.bitrate_kbps)),
@@ -332,7 +322,7 @@ impl LibraryApp {
                     }
                 });
             });
-            theme::setting(ui, t, icons, Some(icon::CLOCK), "Replay length", "", |ui| {
+            theme::setting(ui, t, false, Some(icon::CLOCK), "Replay length", "", |ui| {
                 let label = |v: Option<u32>| match v {
                     Some(secs) => theme::fmt_short(f64::from(secs)),
                     None => format!("Same as general ({})", theme::fmt_short(f64::from(general.replay_seconds))),
@@ -358,21 +348,23 @@ impl LibraryApp {
             let preview = preview.sanitized();
             let buffer = preview.for_game(&g.exe).buffer_bytes();
             let total = preview.recording_memory(&[g.exe.as_str()]);
-            theme::setting(ui, t, icons, Some(icon::INFO), "Memory while it records", &format!("{} for its replay buffer, the rest for capture and encoding", theme::fmt_bytes(buffer)), |ui| {
+            theme::setting(ui, t, false, Some(icon::INFO), "Memory while it records", &format!("{} for its replay buffer, the rest for capture and encoding", theme::fmt_bytes(buffer)), |ui| {
                 ui.label(RichText::new(theme::fmt_bytes(total)).color(t.text));
             });
             let (clips, bytes) = self.game_clips(g);
             let desc = if clips == 0 { "No clips yet".to_string() } else { format!("{clips} {} use {}", if clips == 1 { "clip" } else { "clips" }, theme::fmt_bytes(bytes)) };
-            theme::setting(ui, t, icons, Some(icon::LIBRARY), "Clips", &desc, |ui| {
+            theme::setting(ui, t, false, Some(icon::LIBRARY), "Clips", &desc, |ui| {
                 if clips > 0 && theme::button(ui, "Show clips", true).clicked() {
                     show_clips = true;
                 }
             });
 
-            ui.add_space(20.0);
-            if ui.add(egui::Button::new(theme::label_with_icon(icons, icon::DELETE, "Remove from this list").color(t.critical)).frame_when_inactive(false)).clicked() {
-                forget = true;
-            }
+            theme::section(ui, t, "Remove");
+            theme::setting(ui, t, false, None, "Remove from this list", "Replay adds it again if you play it and it is detected", |ui| {
+                if ui.add(egui::Button::new(theme::icon_label(icons, icon::DELETE, "Remove", t.critical)).min_size(Vec2::new(0.0, theme::CONTROL_H))).clicked() {
+                    forget = true;
+                }
+            });
             ui.add_space(24.0);
         });
 

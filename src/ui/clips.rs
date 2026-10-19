@@ -295,7 +295,6 @@ impl LibraryApp {
                     });
                     ui.add_space(gap);
                 }
-                ui.add_space(8.0);
             }
             ui.add_space(72.0);
         });
@@ -396,7 +395,10 @@ impl LibraryApp {
                     }
                     ui.separator();
                     ui.label(theme::caption("Tile size").color(t.text2));
-                    ui.add(egui::Slider::new(&mut g.tile, 180.0..=420.0).show_value(false));
+                    let mut size = g.tile as u32;
+                    if theme::slider(ui, t, &mut size, 180..=420, false, 180.0).changed() {
+                        g.tile = size as f32;
+                    }
                 });
             });
         });
