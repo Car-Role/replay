@@ -99,6 +99,9 @@ struct Montage {
     music_volume: u32,
     game_volume: u32,
     fade_out: bool,
+    /// Largest size in MB; None keeps the original size.
+    size_mb: Option<u32>,
+    vertical: bool,
 }
 
 /// A dialog that edits clips: rename one, or set tags on several.
@@ -132,8 +135,9 @@ pub struct Job {
 
 pub enum JobDone {
     Exported(PathBuf),
-    /// Exported, then put on the clipboard (Copy for Discord).
-    ExportedCopied(PathBuf),
+    /// Exported, then put on the clipboard (Copy for Discord). The flag says
+    /// the copy will look soft (long clip for the size).
+    ExportedCopied(PathBuf, bool),
     Uploaded(PathBuf, String),
     Update(settings::UpdateState),
     Failed(String),
@@ -357,6 +361,15 @@ impl LibraryApp {
         if let Some(rx) = &self.scan_rx
             && let Ok(list) = rx.try_recv()
         {
+            let newest = self.clips.iter().map(|c| c.modified).max();
+            if let Some(newest) = newest
+                && self.snapshot.is_none()
+                && let Some(c) = list.iter().filter(|c| c.modified > newest).max_by_key(|c| c.modified)
+                && c.modified.elapsed().is_ok_and(|e| e < Duration::from_secs(120))
+            {
+                let title = clips::friendly_title(&c.path, &c.game);
+                self.shared.toast_action(format!("New clip: {title}"), ToastAction::Open(c.path.clone()));
+            }
             self.clips = list;
             self.scan_rx = None;
             let existing: HashSet<&PathBuf> = self.clips.iter().map(|c| &c.path).collect();
@@ -393,10 +406,11 @@ impl LibraryApp {
                     self.shared.toast_action(format!("Saved \u{201c}{name}\u{201d}"), ToastAction::Open(p));
                     self.rescan(ctx);
                 }
-                JobDone::ExportedCopied(p) => {
+                JobDone::ExportedCopied(p, soft) => {
                     let mb = std::fs::metadata(&p).map(|m| m.len() as f64 / 1e6).unwrap_or(0.0);
                     if crate::sys::shell::copy_file(&p) {
-                        self.shared.toast(format!("Ready for Discord ({mb:.1} MB) and copied. Paste it with Ctrl+V."), false);
+                        let tip = if soft { " It is long for this size, so it looks soft; trim it for a sharper copy." } else { "" };
+                        self.shared.toast(format!("Ready for Discord ({mb:.1} MB) and copied. Paste it with Ctrl+V.{tip}"), false);
                     } else {
                         self.shared.toast("The copy is saved, but the clipboard was busy.", true);
                     }
@@ -549,9 +563,10 @@ impl LibraryApp {
         let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), if compact { 20.0 } else { 40.0 }), Sense::hover());
         if compact {
             ui.painter().circle_filled(r.center(), 5.0, dot.gamma_multiply(pulse));
-            let short = line.rsplit(' ').next().unwrap_or("").to_string();
+            // Under the dot: the timer while recording, "Ready" when a replay can be saved.
+            let short = if !capturing.is_empty() { line.rsplit(' ').next().unwrap_or("").to_string() } else if !buffering.is_empty() { "Ready".to_string() } else { String::new() };
             let (sr, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 14.0), Sense::hover());
-            if short.contains(':') {
+            if !short.is_empty() {
                 ui.painter().text(sr.center(), Align2::CENTER_CENTER, short, egui::FontId::proportional(12.0), t.text2);
             }
         } else {
@@ -793,10 +808,11 @@ impl LibraryApp {
                     input.clear();
                 }
                 ui.data_mut(|d| d.insert_temp(input_id, input));
-                let unused: Vec<String> = known_tags.iter().filter(|k| !have.iter().any(|h| h.eq_ignore_ascii_case(k))).cloned().collect();
+                let pool: Vec<String> = if known_tags.is_empty() { ["clutch", "funny", "fail", "ace", "win"].iter().map(|s| s.to_string()).collect() } else { known_tags.clone() };
+                let unused: Vec<String> = pool.iter().filter(|k| !have.iter().any(|h| h.eq_ignore_ascii_case(k))).cloned().collect();
                 if !unused.is_empty() {
                     ui.add_space(8.0);
-                    ui.label(theme::caption("Add a tag you use").color(t.text2));
+                    ui.label(theme::caption(if known_tags.is_empty() { "Ideas" } else { "Tags you use" }).color(t.text2));
                     ui.horizontal_wrapped(|ui| {
                         for k in unused.iter().take(12) {
                             if theme::chip(ui, t, format!("#{k}"), false).clicked() {
@@ -893,11 +909,11 @@ impl LibraryApp {
                             if btn(ui, icon::CANCEL, "x", n > 1).on_hover_text("Leave out").clicked() {
                                 remove = Some(i);
                             }
-                            let down = ui.add_visible(i + 1 < n, egui::Button::new(theme::label_with_icon(icons, icon::DOWN, if icons { "" } else { "v" })).frame_when_inactive(false).min_size(Vec2::splat(theme::CONTROL_H)));
+                            let down = ui.add_enabled(i + 1 < n, egui::Button::new(theme::label_with_icon(icons, icon::DOWN, if icons { "" } else { "v" })).frame_when_inactive(false).min_size(Vec2::splat(theme::CONTROL_H)));
                             if down.on_hover_text("Later").clicked() {
                                 swap = Some((i, i + 1));
                             }
-                            let up = ui.add_visible(i > 0, egui::Button::new(theme::label_with_icon(icons, icon::UP, if icons { "" } else { "^" })).frame_when_inactive(false).min_size(Vec2::splat(theme::CONTROL_H)));
+                            let up = ui.add_enabled(i > 0, egui::Button::new(theme::label_with_icon(icons, icon::UP, if icons { "" } else { "^" })).frame_when_inactive(false).min_size(Vec2::splat(theme::CONTROL_H)));
                             if up.on_hover_text("Earlier").clicked() {
                                 swap = Some((i, i - 1));
                             }
@@ -910,7 +926,13 @@ impl LibraryApp {
                 }
             });
             let total: f64 = m.clips.iter().filter_map(|p| rows.get(p)).map(|r| r.2).sum();
-            let mb: f64 = m.clips.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|md| md.len() as f64 / 1e6).sum();
+            let source_mb: f64 = m.clips.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|md| md.len() as f64 / 1e6).sum();
+            // With a size limit the result lands just under it.
+            let mb = match m.size_mb {
+                Some(limit) => (f64::from(limit) * 0.92).min(source_mb),
+                None if m.vertical => source_mb * 0.45,
+                None => source_mb,
+            };
             ui.add_space(4.0);
             ui.label(theme::caption(format!("{} clips  \u{00b7}  {} in total  \u{00b7}  about {mb:.0} MB", m.clips.len(), theme::fmt_short(total))).color(t.text2));
             if let Some((a, b)) = swap {
@@ -962,8 +984,34 @@ impl LibraryApp {
                     });
                 });
             }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let (lr, _) = ui.allocate_exact_size(Vec2::new(140.0, 32.0), Sense::hover());
+                ui.painter().text(lr.left_center(), Align2::LEFT_CENTER, "Size", egui::FontId::proportional(14.0), t.text);
+                let label = |s: Option<u32>| match s {
+                    None => "Original size".to_string(),
+                    Some(10) => "Discord (10 MB)".to_string(),
+                    Some(50) => "Discord Nitro Basic (50 MB)".to_string(),
+                    Some(mb) => format!("Discord Nitro ({mb} MB)"),
+                };
+                let w = ui.available_width();
+                theme::combo("montage-size").width(w).selected_text(label(m.size_mb)).show_ui(ui, |ui| {
+                    for s in [None, Some(10), Some(50), Some(500)] {
+                        ui.selectable_value(&mut m.size_mb, s, label(s));
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
+                let (lr, _) = ui.allocate_exact_size(Vec2::new(140.0, 32.0), Sense::hover());
+                ui.painter().text(lr.left_center(), Align2::LEFT_CENTER, "Shape", egui::FontId::proportional(14.0), t.text);
+                let w = ui.available_width();
+                let shapes = [("Landscape", "As recorded"), ("Vertical 9:16", "For Shorts, TikTok and Reels")];
+                if let Some(i) = theme::segmented(ui, t, &shapes, usize::from(m.vertical), w) {
+                    m.vertical = i == 1;
+                }
+            });
             ui.add_space(4.0);
-            ui.label(theme::caption("Clips recorded with different settings are encoded again, which takes longer.").color(t.text3));
+            ui.label(theme::caption("Clips recorded with different settings, a size limit or a vertical crop are encoded again, which takes longer.").color(t.text3));
         });
         let Some(ok) = result else { return };
         let m = self.montage.take().expect("open");
@@ -982,7 +1030,26 @@ impl LibraryApp {
         };
         let total: f64 = self.clips.iter().filter(|c| m.clips.contains(&c.path)).map(|c| c.duration).sum();
         let label = format!("Making a montage of {} clips", segments.len());
-        self.shared.spawn_job(ctx, JobKind::Export, label, move |p| export_joined(&segments, &out, &mix, total, p, "Montage"));
+        // A size limit or a vertical crop means encoding again with H.264.
+        let fixed = (m.size_mb.is_some() || m.vertical).then(|| {
+            let (k, h) = match m.size_mb {
+                Some(mb) => crate::edit::size_target(f64::from(mb), total, 128),
+                None => (12_000, None),
+            };
+            crate::edit::EncodeSpec { codec: crate::config::Codec::H264, bitrate_kbps: k, cbr: m.size_mb.is_some(), max_height: h, vertical: m.vertical.then_some(0.5) }
+        });
+        let mut mix = mix;
+        if m.size_mb.is_some() {
+            mix.keep_separate = false;
+            mix.bitrate_kbps = 128;
+        }
+        self.shared.spawn_job(ctx, JobKind::Export, label, move |p| match fixed {
+            Some(spec) => match crate::edit::export(&segments, &out, &mix, &crate::edit::VideoMode::Encode(spec), p) {
+                Ok(path) => JobDone::Exported(path),
+                Err(e) => JobDone::Failed(format!("Montage failed: {e}")),
+            },
+            None => export_joined(&segments, &out, &mix, total, p, "Montage"),
+        });
         self.gallery.checked.clear();
     }
 
@@ -1004,7 +1071,7 @@ impl LibraryApp {
     fn open_montage(&mut self) {
         let mut list: Vec<&ClipEntry> = self.clips.iter().filter(|c| self.gallery.checked.contains(&c.path)).collect();
         list.sort_by_key(|c| c.modified);
-        self.montage = Some(Montage { clips: list.iter().map(|c| c.path.clone()).collect(), music: None, music_volume: 60, game_volume: 100, fade_out: true });
+        self.montage = Some(Montage { clips: list.iter().map(|c| c.path.clone()).collect(), music: None, music_volume: 60, game_volume: 100, fade_out: true, size_mb: None, vertical: false });
     }
 }
 

@@ -632,7 +632,7 @@ impl LibraryApp {
                             if b(ui, icon::VIDEO, "Montage", n >= 2).on_hover_text("Choose the order and add music").on_disabled_hover_text("Select two or more clips").clicked() {
                                 action = Some("montage");
                             }
-                            if b(ui, icon::COPY, "Copy", true).on_hover_text("Copy the files, then paste them into Discord or a folder").clicked() {
+                            if b(ui, icon::COPY, "Copy files", true).on_hover_text("Copy to the clipboard, then paste into Discord or a folder").clicked() {
                                 action = Some("copy");
                             }
                             if b(ui, icon::TAG, "Tags", true).clicked() {

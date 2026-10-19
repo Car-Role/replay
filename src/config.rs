@@ -250,6 +250,8 @@ pub struct ShareConfig {
     pub streamable_password_protected: String,
     /// How long Litterbox keeps files: 1, 12, 24 or 72 hours.
     pub litterbox_hours: u32,
+    /// Your Discord upload limit in MB (10, 50 with Nitro Basic, 500 with Nitro).
+    pub discord_mb: u32,
     pub custom: CustomUploader,
 }
 
@@ -262,6 +264,7 @@ impl Default for ShareConfig {
             streamable_email: String::new(),
             streamable_password_protected: String::new(),
             litterbox_hours: 72,
+            discord_mb: 10,
             custom: CustomUploader::default(),
         }
     }

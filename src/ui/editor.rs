@@ -54,7 +54,7 @@ impl Preset {
             Preset::Discord50 => "Discord Nitro Basic (50 MB)",
             Preset::Discord500 => "Discord Nitro (500 MB)",
             Preset::Custom => "Custom size",
-            Preset::Original => "Original quality",
+            Preset::Original => "Original size",
         }
     }
 
@@ -523,8 +523,9 @@ impl Editor {
                             }
                             ui.close();
                         }
-                        let r = ui.add_enabled(!busy, egui::Button::new(theme::label_with_icon(icons, icon::SHARE, "Copy for Discord (10 MB)")));
-                        if r.on_hover_text("Makes a copy that fits Discord's 10 MB limit and puts it on the clipboard").clicked() {
+                        let mb = shared.cfg.share.discord_mb;
+                        let r = ui.add_enabled(!busy, egui::Button::new(theme::label_with_icon(icons, icon::SHARE, &format!("Copy for Discord ({mb} MB)"))));
+                        if r.on_hover_text(format!("Makes a copy that fits your {mb} MB Discord limit and puts it on the clipboard. Change the limit in Settings > Sharing")).clicked() {
                             self.copy_for_discord(&ctx, shared);
                             ui.close();
                         }
@@ -892,7 +893,7 @@ impl Editor {
                         ui.columns(3, |cols| {
                             for (col, (k, v)) in cols.iter_mut().zip([("Start", self.in_point), ("End", self.out_point), ("Length", self.out_point - self.in_point)]) {
                                 col.label(theme::caption(k).color(t.text2));
-                                col.label(RichText::new(theme::fmt_time(v)).color(t.text));
+                                col.label(RichText::new(theme::fmt_time(v)).color(t.text2));
                             }
                         });
                         ui.add_space(8.0);
@@ -1012,20 +1013,11 @@ impl Editor {
         }
         ui.add_space(2.0);
         ui.label(theme::caption("Shape").color(t.text2));
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let half = (ui.available_width() - 6.0) / 2.0;
-            for (v, label, hint) in [(false, "Landscape", "As recorded"), (true, "Vertical 9:16", "For Shorts, TikTok and Reels")] {
-                let on = self.vertical == v;
-                let b = egui::Button::new(RichText::new(label).color(if on { t.text } else { t.text2 }))
-                    .fill(if on { if t.dark { Color32::from_gray(62) } else { Color32::from_gray(230) } } else { Color32::TRANSPARENT })
-                    .stroke(Stroke::new(1.0, if on { t.accent } else { t.control_stroke }))
-                    .min_size(Vec2::new(half, theme::CONTROL_H));
-                if ui.add(b).on_hover_text(hint).clicked() {
-                    self.vertical = v;
-                }
-            }
-        });
+        let w = ui.available_width();
+        let shapes = [("Landscape", "As recorded"), ("Vertical 9:16", "For Shorts, TikTok and Reels")];
+        if let Some(i) = theme::segmented(ui, t, &shapes, usize::from(self.vertical), w) {
+            self.vertical = i == 1;
+        }
 
     }
 
@@ -1033,13 +1025,15 @@ impl Editor {
     /// clipboard when it is done.
     fn copy_for_discord(&mut self, ctx: &egui::Context, shared: &mut Shared) {
         let secs = (self.out_point - self.in_point).max(0.1);
-        let (k, h) = edit::size_target(10.0, secs, 128);
+        let mb = f64::from(shared.cfg.share.discord_mb.max(1));
+        let (k, h) = edit::size_target(mb, secs, 128);
+        let soft = k < 800;
         let spec = edit::EncodeSpec { codec: crate::config::Codec::H264, bitrate_kbps: k, cbr: true, max_height: h, vertical: self.vertical.then_some(self.crop_center) };
         let seg = vec![Segment { path: self.path.clone(), start: self.in_point, end: self.out_point }];
         let out = edit::edited_name(&self.path, "discord");
         let mix = Mix { game: self.game_gain, mic: self.mic_gain, keep_separate: false, bitrate_kbps: 128, music: None };
         shared.spawn_job(ctx, JobKind::Export, "Making a copy for Discord".into(), move |p| match edit::export(&seg, &out, &mix, &edit::VideoMode::Encode(spec), p) {
-            Ok(path) => JobDone::ExportedCopied(path),
+            Ok(path) => JobDone::ExportedCopied(path, soft),
             Err(e) => JobDone::Failed(format!("Copy for Discord failed: {e}")),
         });
     }

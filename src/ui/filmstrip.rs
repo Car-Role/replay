@@ -37,7 +37,8 @@ pub fn build(path: &Path, duration: f64, count: usize, thumb_h: usize, wake: imp
                             skipped += 1;
                         }
                         Ok(f) if f.generation == generation => {
-                            let (w, h, rgba) = shrink(&f.rgba, f.width, f.height, thumb_h);
+                            let (w, h, mut rgba) = shrink(&f.rgba, f.width, f.height, thumb_h);
+                            lift_dark(&mut rgba);
                             if tx.send(Thumb { index: i, width: w, height: h, rgba }).is_err() {
                                 return;
                             }
@@ -53,6 +54,22 @@ pub fn build(path: &Path, duration: f64, count: usize, thumb_h: usize, wake: imp
         })
         .ok();
     rx
+}
+
+/// Brightens dark tiles (filmstrip only, never the player) so dark
+/// moments can still be found by scrubbing.
+fn lift_dark(rgba: &mut [u8]) {
+    let n = (rgba.len() / 4).max(1) as u64;
+    let mean: u64 = rgba.chunks(4).map(|p| (u64::from(p[0]) * 2 + u64::from(p[1]) * 5 + u64::from(p[2])) / 8).sum::<u64>() / n;
+    if mean >= 60 || mean == 0 {
+        return;
+    }
+    let gain = (70.0 / mean as f32).min(2.5);
+    for p in rgba.chunks_mut(4) {
+        for c in &mut p[..3] {
+            *c = (f32::from(*c) * gain).min(255.0) as u8;
+        }
+    }
 }
 
 /// True when almost every sampled pixel is near black.

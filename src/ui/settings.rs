@@ -225,8 +225,8 @@ impl SettingsPage {
             });
         });
         let one = theme::fmt_bytes(d.recording_memory(&["(any game)"]));
-        let desc = format!("Higher is sharper. About {one} of memory while a game records");
-        theme::setting(ui, t, false, None, "Quality", &desc, |ui| {
+        let desc = format!("Higher is sharper; lower uses less memory and disk. About {one} of memory while a game records");
+        theme::setting(ui, t, false, None, "Bitrate", &desc, |ui| {
             let mut kbps = d.video.bitrate_kbps;
             let label = theme::fmt_mbps(kbps);
             if theme::slider_row(ui, t, label, &mut kbps, 500..=150_000, true).changed() {
@@ -495,6 +495,19 @@ impl SettingsPage {
             }
         }
         let d = &mut self.draft;
+        theme::setting(ui, t, false, None, "Discord upload limit", "Copy for Discord makes copies that fit this size", |ui| {
+            let label = |mb: u32| match mb {
+                10 => "10 MB (no Nitro)".to_string(),
+                50 => "50 MB (Nitro Basic)".to_string(),
+                500 => "500 MB (Nitro)".to_string(),
+                m => format!("{m} MB"),
+            };
+            theme::combo("discord").width(COMBO_W).selected_text(label(d.share.discord_mb)).show_ui(ui, |ui| {
+                for mb in [10, 50, 500] {
+                    ui.selectable_value(&mut d.share.discord_mb, mb, label(mb));
+                }
+            });
+        });
         let target = d.share.target.label();
         theme::setting(ui, t, false, Some(icon::UPLOAD), "Upload every replay", &format!("Send each saved clip to {target} automatically"), |ui| {
             theme::toggle(ui, t, &mut d.share.auto_upload);

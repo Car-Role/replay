@@ -597,7 +597,7 @@ pub fn combo<'a>(id: impl egui::AsIdSalt + std::fmt::Debug) -> egui::ComboBox<'a
 /// control column.
 pub fn slider_row(ui: &mut Ui, t: &Tokens, value: String, v: &mut u32, range: std::ops::RangeInclusive<u32>, log: bool) -> Response {
     let (r, _) = ui.allocate_exact_size(Vec2::new(60.0, 20.0), Sense::hover());
-    ui.painter().text(egui::pos2(r.left() + 4.0, r.center().y), egui::Align2::LEFT_CENTER, value, FontId::proportional(14.0), t.text2);
+    ui.painter().text(egui::pos2(r.right(), r.center().y), egui::Align2::RIGHT_CENTER, value, FontId::proportional(14.0), t.text2);
     slider(ui, t, v, range, log, CONTROL_COL - 68.0)
 }
 
@@ -650,12 +650,12 @@ pub fn slider(ui: &mut Ui, t: &Tokens, v: &mut u32, range: std::ops::RangeInclus
 /// A tag chip: neutral, with a quiet remove mark.
 pub fn tag_chip(ui: &mut Ui, t: &Tokens, tag: &str) -> Response {
     let galley = ui.painter().layout_no_wrap(format!("#{tag}"), FontId::proportional(14.0), t.text);
-    let w = galley.size().x + 12.0 + 22.0;
+    let w = galley.size().x + 12.0 + 8.0 + 12.0 + 10.0;
     let (r, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::click());
     let fill = if resp.hovered() { t.control_hover } else { t.control };
     ui.painter().rect(r, CornerRadius::same(14), fill, Stroke::new(1.0, t.control_stroke), egui::StrokeKind::Inside);
     ui.painter().galley(egui::pos2(r.left() + 12.0, r.center().y - galley.size().y / 2.0), galley, t.text);
-    let x = egui::pos2(r.right() - 14.0, r.center().y);
+    let x = egui::pos2(r.right() - 16.0, r.center().y);
     ui.painter().text(x, egui::Align2::CENTER_CENTER, "\u{00d7}", FontId::proportional(16.0), if resp.hovered() { t.text } else { t.text2 });
     focus_ring(ui, t, &resp, r, 14.0);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Remove tag {tag}")));
@@ -676,6 +676,34 @@ pub fn icon_button(ui: &mut Ui, t: &Tokens, text: RichText, name: &str) -> Respo
     focus_ring(ui, t, &resp, r, f32::from(R_CONTROL));
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A segmented control: one container, equal segments, one selected.
+/// Returns the clicked index.
+pub fn segmented(ui: &mut Ui, t: &Tokens, labels: &[(&str, &str)], selected: usize, width: f32) -> Option<usize> {
+    let (r, _) = ui.allocate_exact_size(Vec2::new(width, CONTROL_H), Sense::hover());
+    ui.painter().rect(r, R_CONTROL, t.control, Stroke::new(1.0, t.control_stroke), egui::StrokeKind::Inside);
+    let n = labels.len().max(1);
+    let w = r.width() / n as f32;
+    let mut clicked = None;
+    for (i, (label, hint)) in labels.iter().enumerate() {
+        let seg = egui::Rect::from_min_size(egui::pos2(r.left() + w * i as f32, r.top()), Vec2::new(w, r.height()));
+        let resp = ui.interact(seg, ui.id().with(("segment", *label)), Sense::click());
+        let on = i == selected;
+        if on {
+            let fill = if t.dark { argb(0xFF3E_3E3E) } else { argb(0xFFE6_E6E6) };
+            ui.painter().rect(seg.shrink(1.0), R_CONTROL, fill, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+        } else if resp.hovered() {
+            ui.painter().rect_filled(seg.shrink(2.0), R_CONTROL, t.subtle_hover);
+        }
+        ui.painter().text(seg.center(), egui::Align2::CENTER_CENTER, *label, FontId::proportional(14.0), if on { t.text } else { t.text2 });
+        focus_ring(ui, t, &resp, seg, f32::from(R_CONTROL));
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, on, *label));
+        if resp.on_hover_text(*hint).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            clicked = Some(i);
+        }
+    }
+    clicked
 }
 
 /// A fixed-width button with its label centred (dialog footers).

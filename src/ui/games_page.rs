@@ -245,6 +245,10 @@ impl LibraryApp {
             if clips > 0 {
                 parts.push(format!("{clips} {}  \u{00b7}  {}", if clips == 1 { "clip" } else { "clips" }, theme::fmt_bytes(bytes)));
             }
+            if g.recording {
+                let secs = self.shared.cfg.for_game(&g.exe).replay_seconds;
+                parts.insert(0, format!("Buffering {}", theme::fmt_short(f64::from(secs))));
+            }
             if enabled {
                 parts.push(self.quality_line(&g.exe));
             } else {
@@ -307,7 +311,7 @@ impl LibraryApp {
                 }
             });
 
-            theme::section(ui, t, "Quality");
+            theme::section(ui, t, "Video");
             let combo_w = theme::CONTROL_COL;
             theme::setting(ui, t, false, Some(icon::VIDEO), "Frame rate", "", |ui| {
                 let label = |v: Option<u32>| v.map(|f| format!("{f} fps")).unwrap_or_else(|| format!("Same as general ({} fps)", general.video.fps));
@@ -330,7 +334,7 @@ impl LibraryApp {
                     }
                 });
             });
-            theme::setting(ui, t, false, None, "Quality", "Lower uses less memory and disk", |ui| {
+            theme::setting(ui, t, false, None, "Bitrate", "Higher is sharper; lower uses less memory and disk", |ui| {
                 let label = |v: Option<u32>| match v {
                     Some(k) => theme::fmt_mbps(k),
                     None => format!("Same as general ({})", theme::fmt_mbps(general.video.bitrate_kbps)),
