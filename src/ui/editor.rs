@@ -936,14 +936,15 @@ impl Editor {
             .fill(t.card)
             .stroke(Stroke::new(1.0, t.card_stroke))
             .corner_radius(CornerRadius::same(theme::R_CARD))
-            .inner_margin(egui::Margin::same(16))
+            .inner_margin(egui::Margin { left: 16, right: 4, top: 16, bottom: 16 })
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.set_min_height(ui.available_height());
                 let footer_h = self.footer_h;
                 // A faint scroll thumb whenever something is out of view.
                 ui.spacing_mut().scroll.dormant_handle_opacity = 0.6;
-                // Its own 12 px lane, so the thumb never sits on a control.
+                // A 12 px lane inside the card's right padding (4 + 12 = 16 px,
+                // the same as the left), so the thumb never sits on a control.
                 ui.spacing_mut().scroll.floating_allocated_width = 12.0;
                 let out = egui::ScrollArea::vertical()
                     .id_salt("inspector")
@@ -1071,7 +1072,7 @@ impl Editor {
                 let end = ui
                     .allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Min), |ui| {
                         let (d, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 9.0), Sense::hover());
-                        ui.painter().line_segment([Pos2::new(d.left() - 16.0, d.center().y), Pos2::new(d.right() + 28.0, d.center().y)], Stroke::new(1.0, t.divider));
+                        ui.painter().line_segment([Pos2::new(d.left() - 16.0, d.center().y), Pos2::new(d.right() + 16.0, d.center().y)], Stroke::new(1.0, t.divider));
                         self.save_footer(ui, t, icons, shared, busy);
                         ui.cursor().top()
                     })

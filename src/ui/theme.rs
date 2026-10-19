@@ -708,7 +708,7 @@ pub fn caution(ui: &mut Ui, t: &Tokens, icons: bool, text: &str, action: Option<
             let tw = (ui.available_width() - gw - bw).max(80.0);
             let galley = ui.painter().layout(text.to_string(), font, t.text, tw);
             let line_h = galley.rows.first().map_or(16.0, |r| r.height());
-            let h = galley.size().y.max(if action.is_some() { 24.0 } else { 0.0 });
+            let h = galley.size().y.max(if action.is_some() { CONTROL_H } else { 0.0 });
             let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::hover());
             let text_top = row.top() + (h - galley.size().y) / 2.0;
             if icons {
@@ -719,7 +719,7 @@ pub fn caution(ui: &mut Ui, t: &Tokens, icons: bool, text: &str, action: Option<
             if let Some(a) = action {
                 // A small standard button: primary text on a control fill,
                 // so it passes 4.5:1 on the tint.
-                let br = egui::Rect::from_min_size(egui::Pos2::new(row.right() - bw + 12.0, row.center().y - 12.0), Vec2::new(bw - 12.0, 24.0));
+                let br = egui::Rect::from_min_size(egui::Pos2::new(row.right() - bw + 12.0, row.center().y - CONTROL_H / 2.0), Vec2::new(bw - 12.0, CONTROL_H));
                 let b = egui::Button::new(caption(a).color(t.text))
                     .fill(argb(0x0FFF_FFFF))
                     .stroke(Stroke::new(1.0, argb(0x24FF_FFFF)))
