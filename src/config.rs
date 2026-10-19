@@ -273,6 +273,24 @@ impl Default for OverlayConfig {
     }
 }
 
+/// Picture-in-picture webcam in recordings.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct WebcamConfig {
+    pub enabled: bool,
+    /// Camera id; empty means the first camera.
+    pub device: String,
+    pub corner: OverlayCorner,
+    /// Height of the webcam picture, in percent of the video height.
+    pub size: u32,
+}
+
+impl Default for WebcamConfig {
+    fn default() -> Self {
+        Self { enabled: false, device: String::new(), corner: OverlayCorner::BottomRight, size: 25 }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct StorageConfig {
@@ -298,6 +316,7 @@ pub struct Config {
     pub updates: UpdateConfig,
     pub storage: StorageConfig,
     pub overlay: OverlayConfig,
+    pub webcam: WebcamConfig,
     /// Per-game settings, keyed by the lower-case executable name.
     pub games: BTreeMap<String, GameSettings>,
 }
@@ -318,6 +337,7 @@ impl Default for Config {
             updates: UpdateConfig::default(),
             storage: StorageConfig::default(),
             overlay: OverlayConfig::default(),
+            webcam: WebcamConfig::default(),
             games: BTreeMap::new(),
         }
     }
@@ -394,6 +414,7 @@ impl Config {
             _ => 192,
         };
         self.audio.microphone_volume = self.audio.microphone_volume.min(400);
+        self.webcam.size = self.webcam.size.clamp(10, 50);
         self.audio.game_volume = self.audio.game_volume.min(400);
         let mut games = BTreeMap::new();
         for (exe, mut g) in std::mem::take(&mut self.games) {

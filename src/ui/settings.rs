@@ -29,6 +29,7 @@ pub struct SettingsPage {
     encoders: Vec<(Codec, bool)>,
     /// Clips in the folder and their total size, for the Storage section.
     usage: (usize, u64),
+    cameras: Vec<(String, String)>,
 }
 
 const FPS: [u32; 5] = [30, 60, 120, 144, 240];
@@ -48,6 +49,7 @@ impl SettingsPage {
             mics: crate::sys::list_microphones(),
             encoders: crate::sys::available_codecs(),
             usage: folder_usage(&cfg.output_dir),
+            cameras: crate::sys::list_cameras(),
         }
     }
 
@@ -55,8 +57,9 @@ impl SettingsPage {
     pub fn reset(&mut self, cfg: &Config) {
         let mics = std::mem::take(&mut self.mics);
         let encoders = std::mem::take(&mut self.encoders);
+        let cameras = std::mem::take(&mut self.cameras);
         let update = self.update.clone();
-        *self = Self { mics, encoders, update, ..Self::new(cfg) };
+        *self = Self { mics, encoders, cameras, update, ..Self::new(cfg) };
     }
 
     /// Returns true when the clips folder changed (the list must rescan).
@@ -76,6 +79,7 @@ impl SettingsPage {
             self.recording(ui, &t, icons);
             self.storage(ui, &t, icons);
             self.audio(ui, &t, icons);
+            self.webcam(ui, &t, icons);
             self.hotkeys(ui, &t, icons);
             self.detection(ui, &t, icons);
             self.sharing(ui, &t, icons, shared);
@@ -235,6 +239,40 @@ impl SettingsPage {
                     ui.selectable_value(&mut d.audio.bitrate_kbps, b, format!("{b} kbit/s"));
                 }
             });
+        });
+    }
+
+    fn webcam(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
+        let d = &mut self.draft;
+        theme::section(ui, t, "Webcam");
+        let desc = if self.cameras.is_empty() { "No camera was found" } else { "Show your camera in a corner of every recording. The camera is on only while a game records" };
+        theme::setting(ui, t, icons, Some(icon::VIDEO), "Webcam in recordings", desc, |ui| {
+            theme::toggle(ui, t, &mut d.webcam.enabled);
+        });
+        if !d.webcam.enabled {
+            return;
+        }
+        let cams = self.cameras.clone();
+        theme::setting(ui, t, icons, None, "Camera", "", |ui| {
+            let current = cams.iter().find(|(id, _)| *id == d.webcam.device).map(|(_, n)| n.clone()).unwrap_or_else(|| "First camera".into());
+            egui::ComboBox::from_id_salt("cam").width(300.0).selected_text(current).show_ui(ui, |ui| {
+                ui.selectable_value(&mut d.webcam.device, String::new(), "First camera");
+                for (id, name) in &cams {
+                    ui.selectable_value(&mut d.webcam.device, id.clone(), name);
+                }
+            });
+        });
+        theme::setting(ui, t, icons, None, "Position", "", |ui| {
+            egui::ComboBox::from_id_salt("cam-corner").width(COMBO_W).selected_text(d.webcam.corner.label()).show_ui(ui, |ui| {
+                for c in OverlayCorner::ALL {
+                    ui.selectable_value(&mut d.webcam.corner, c, c.label());
+                }
+            });
+        });
+        theme::setting(ui, t, icons, None, "Size", "Height of the camera picture", |ui| {
+            ui.label(RichText::new(format!("{}%", d.webcam.size)).color(t.text2));
+            ui.spacing_mut().slider_width = 220.0;
+            ui.add(egui::Slider::new(&mut d.webcam.size, 10..=50).show_value(false));
         });
     }
 

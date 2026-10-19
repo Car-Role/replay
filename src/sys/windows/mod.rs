@@ -17,6 +17,7 @@ pub mod shell;
 pub mod transcode;
 pub mod tray;
 pub mod verify;
+pub mod webcam;
 
 use crate::config::Codec;
 
@@ -47,6 +48,10 @@ pub mod aac {
             self.0.decode(frame, out).map_err(|e| e.to_string())
         }
     }
+}
+
+pub fn list_cameras() -> Vec<(String, String)> {
+    webcam::list_cameras()
 }
 
 pub fn list_microphones() -> Vec<(String, String)> {

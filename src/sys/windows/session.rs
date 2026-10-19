@@ -73,6 +73,7 @@ impl Session {
         target: Target,
         cfg: &Config,
         out_size: (u32, u32),
+        webcam: Option<Arc<crate::webcam::Webcam>>,
         on_end: impl Fn(u32, SessionEnd) + Send + 'static,
     ) -> Self {
         let v = &cfg.video;
@@ -108,6 +109,7 @@ impl Session {
             target,
             settings,
             cursor: v.capture_cursor,
+            webcam: webcam.map(|w| (w, cfg.webcam.corner, cfg.webcam.size)),
             ring: video.clone(),
             state: video_state.clone(),
             tx: tx.clone(),
@@ -192,9 +194,28 @@ struct VideoWorker {
     target: Target,
     settings: EncoderSettings,
     cursor: bool,
+    /// The webcam, its corner and its height in percent.
+    webcam: Option<(Arc<crate::webcam::Webcam>, crate::config::OverlayCorner, u32)>,
     ring: Arc<Mutex<PacketRing>>,
     state: Arc<Mutex<VideoState>>,
     tx: Sender<Msg>,
+}
+
+/// Where the webcam goes in an output frame of `out`: (x, y, w, h).
+pub fn webcam_rect(out: (u32, u32), cam: (u32, u32), corner: crate::config::OverlayCorner, percent: u32) -> (u32, u32, u32, u32) {
+    use crate::config::OverlayCorner as C;
+    let h = (out.1 * percent / 100).max(2) & !1;
+    let w = ((u64::from(h) * u64::from(cam.0) / u64::from(cam.1.max(1))) as u32).min(out.0) & !1;
+    let m = (out.1 * 3 / 100) & !1;
+    let x = match corner {
+        C::TopLeft | C::BottomLeft => m,
+        C::TopRight | C::BottomRight => out.0.saturating_sub(w + m),
+    };
+    let y = match corner {
+        C::TopLeft | C::TopRight => m,
+        C::BottomLeft | C::BottomRight => out.1.saturating_sub(h + m),
+    };
+    (x, y, w, h)
 }
 
 struct Pending {
@@ -356,7 +377,10 @@ impl VideoWorker {
                         Some((x, y, w, h)) if x + w <= shown.0 && y + h <= shown.1 => (x, y, w, h),
                         _ => (0, 0, shown.0, shown.1),
                     };
-                    conv.as_mut().expect("converter").convert(&tex, rect, slot)?;
+                    let overlay = self.webcam.as_ref().filter(|(w, _, _)| w.frames.load(std::sync::atomic::Ordering::Acquire) > 0).map(|(w, corner, pct)| {
+                        crate::gpu::Overlay { texture: &w.texture, size: w.size, dest: webcam_rect((s.width, s.height), w.size, *corner, *pct) }
+                    });
+                    conv.as_mut().expect("converter").convert_with(&tex, 0, rect, slot, overlay)?;
                     drop(frame);
                     last_slot = k;
                     pending = Some(Pending { slot, pts: k * frame_ticks });

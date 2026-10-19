@@ -21,7 +21,7 @@ mod util;
 
 // Short paths for the Windows backend modules, which refer to each other as `crate::<name>`.
 #[cfg(windows)]
-use sys::windows::{app, audio, capture, detect, encoder, gpu, overlay, session, tray, verify};
+use sys::windows::{app, audio, capture, detect, encoder, gpu, overlay, session, tray, verify, webcam};
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();

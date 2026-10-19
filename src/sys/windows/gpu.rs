@@ -131,6 +131,18 @@ pub struct Converter {
     outputs: Vec<ID3D11VideoProcessorOutputView>,
     /// Cached input views by (texture, array slice).
     inputs: Vec<(ID3D11Texture2D, u32, ID3D11VideoProcessorInputView)>,
+    /// How many pictures one pass can combine (2 or more allows the webcam).
+    max_streams: u32,
+    overlay_view: Option<(ID3D11Texture2D, ID3D11VideoProcessorInputView)>,
+}
+
+/// A second picture drawn over the frame: the webcam.
+pub struct Overlay<'a> {
+    pub texture: &'a ID3D11Texture2D,
+    /// Size of the overlay texture.
+    pub size: (u32, u32),
+    /// Where it goes, as (x, y, w, h) in output pixels.
+    pub dest: (u32, u32, u32, u32),
 }
 
 impl Converter {
@@ -163,10 +175,17 @@ impl Converter {
             };
             let enumerator = gpu.video_device.CreateVideoProcessorEnumerator(&desc)?;
             let processor = gpu.video_device.CreateVideoProcessor(&enumerator, 0)?;
+            let mut caps = D3D11_VIDEO_PROCESSOR_CAPS::default();
+            let max_streams = if enumerator.GetVideoProcessorCaps(&mut caps).is_ok() { caps.MaxInputStreams } else { 1 };
             let vc = &gpu.video_context;
             vc.VideoProcessorSetStreamFrameFormat(&processor, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
             vc.VideoProcessorSetStreamAutoProcessingMode(&processor, 0, false);
             vc.VideoProcessorSetStreamColorSpace1(&processor, 0, input_space);
+            if max_streams >= 2 {
+                vc.VideoProcessorSetStreamFrameFormat(&processor, 1, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+                vc.VideoProcessorSetStreamAutoProcessingMode(&processor, 1, false);
+                vc.VideoProcessorSetStreamColorSpace1(&processor, 1, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+            }
             vc.VideoProcessorSetOutputColorSpace1(&processor, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
             let black = D3D11_VIDEO_COLOR {
                 Anonymous: D3D11_VIDEO_COLOR_0 { RGBA: D3D11_VIDEO_COLOR_RGBA { R: 0.0, G: 0.0, B: 0.0, A: 1.0 } },
@@ -183,7 +202,7 @@ impl Converter {
                 gpu.video_device.CreateVideoProcessorOutputView(t, &enumerator, &vdesc, Some(&mut view))?;
                 outputs.push(view.expect("view"));
             }
-            Ok(Self { gpu, enumerator, processor, in_size, out_size, outputs, inputs: Vec::new() })
+            Ok(Self { gpu, enumerator, processor, in_size, out_size, outputs, inputs: Vec::new(), max_streams, overlay_view: None })
         }
     }
 
@@ -223,6 +242,16 @@ impl Converter {
 
     /// Like `convert`, for one slice of a texture array (decoder output).
     pub fn convert_slice(&mut self, src: &ID3D11Texture2D, slice: u32, crop: (u32, u32, u32, u32), slot: usize) -> Result<()> {
+        self.convert_with(src, slice, crop, slot, None)
+    }
+
+    /// Like `convert_slice`, with an optional picture on top (the webcam).
+    pub fn convert_with(&mut self, src: &ID3D11Texture2D, slice: u32, crop: (u32, u32, u32, u32), slot: usize, overlay: Option<Overlay>) -> Result<()> {
+        let overlay = if self.max_streams >= 2 { overlay } else { None };
+        let over_view = match &overlay {
+            Some(o) => Some(self.overlay_input(o.texture)?),
+            None => None,
+        };
         let view = self.input_view(src, slice)?;
         let (cx, cy) = (crop.0 as i32, crop.1 as i32);
         let (cw, ch) = (crop.2.max(1), crop.3.max(1));
@@ -244,11 +273,40 @@ impl Converter {
                 pInputSurface: std::mem::ManuallyDrop::new(Some(view)),
                 ..Default::default()
             };
-            let streams = [stream];
+            let mut streams = vec![stream];
+            if let (Some(o), Some(v)) = (&overlay, over_view) {
+                let src = RECT { left: 0, top: 0, right: o.size.0 as i32, bottom: o.size.1 as i32 };
+                let (x, y, w, h) = o.dest;
+                let dst = RECT { left: x as i32, top: y as i32, right: (x + w) as i32, bottom: (y + h) as i32 };
+                vc.VideoProcessorSetStreamSourceRect(&self.processor, 1, true, Some(&src));
+                vc.VideoProcessorSetStreamDestRect(&self.processor, 1, true, Some(&dst));
+                streams.push(D3D11_VIDEO_PROCESSOR_STREAM { Enable: true.into(), pInputSurface: std::mem::ManuallyDrop::new(Some(v)), ..Default::default() });
+            }
             let r = vc.VideoProcessorBlt(&self.processor, &self.outputs[slot], 0, &streams);
-            let [mut stream] = streams;
-            std::mem::ManuallyDrop::drop(&mut stream.pInputSurface);
+            for mut s in streams {
+                std::mem::ManuallyDrop::drop(&mut s.pInputSurface);
+            }
             r
         }
+    }
+
+    fn overlay_input(&mut self, tex: &ID3D11Texture2D) -> Result<ID3D11VideoProcessorInputView> {
+        if let Some((t, v)) = &self.overlay_view
+            && t.as_raw() == tex.as_raw()
+        {
+            return Ok(v.clone());
+        }
+        let desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
+            FourCC: 0,
+            ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
+            Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 { Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: 0 } },
+        };
+        let mut view = None;
+        unsafe {
+            self.gpu.video_device.CreateVideoProcessorInputView(tex, &self.enumerator, &desc, Some(&mut view))?;
+        }
+        let view = view.expect("view");
+        self.overlay_view = Some((tex.clone(), view.clone()));
+        Ok(view)
     }
 }

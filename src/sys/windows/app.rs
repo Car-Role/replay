@@ -125,6 +125,9 @@ struct App {
     finishing: Vec<crate::record::Recording>,
     /// Executables last published as having a session recording.
     published_capturing: RefCell<Vec<String>>,
+    /// The camera while any game records with the webcam on.
+    webcam: Option<Arc<crate::webcam::Webcam>>,
+    webcam_failed: bool,
 }
 
 thread_local! {
@@ -215,6 +218,8 @@ pub fn run() -> windows::core::Result<()> {
             recordings: Vec::new(),
             finishing: Vec::new(),
             published_capturing: RefCell::new(Vec::new()),
+            webcam: None,
+            webcam_failed: false,
         };
         APP.with(|a| *a.borrow_mut() = Some(app));
         with_app(|a| {
@@ -533,7 +538,8 @@ impl App {
         crate::games::note_detected(&game.exe, &game.name, &crate::detect::process_path(game.pid).unwrap_or_default(), reason.describe());
         let hwnd_app = self.hwnd.0 as isize;
         let target = crate::capture::Target::Window(game.hwnd);
-        let session = Session::start(gpu, game, target, &cfg, out, move |pid, end| post(hwnd_app, WM_APP_SESSION_END, pid as usize, end));
+        let cam = self.ensure_webcam(&gpu);
+        let session = Session::start(gpu, game, target, &cfg, out, cam, move |pid, end| post(hwnd_app, WM_APP_SESSION_END, pid as usize, end));
         self.sessions.push(session);
         self.ensure_mic();
         self.update_tray();
@@ -620,6 +626,9 @@ impl App {
         }
         if !self.retry.is_empty() {
             self.retry.retain(|pid, _| crate::detect::process_exe(*pid).is_some());
+        }
+        if self.running().next().is_none() && self.webcam.take().is_some() {
+            log::info!("no games; webcam closed");
         }
         if self.sessions.is_empty() && self.gpu.take().is_some() {
             log::info!("no games; GPU device released");
@@ -884,6 +893,28 @@ impl App {
         }
     }
 
+    /// The webcam for a new session, started on first use.
+    fn ensure_webcam(&mut self, gpu: &Arc<Gpu>) -> Option<Arc<crate::webcam::Webcam>> {
+        if !self.cfg.webcam.enabled || self.webcam_failed {
+            return None;
+        }
+        if let Some(w) = &self.webcam {
+            return Some(w.clone());
+        }
+        match crate::webcam::Webcam::start(gpu.clone(), &self.cfg.webcam.device) {
+            Ok(w) => {
+                self.webcam = Some(w.clone());
+                Some(w)
+            }
+            Err(e) => {
+                log::warn!("webcam: {e}");
+                self.webcam_failed = true;
+                tray::balloon(self.hwnd, "Replay: webcam not shown", &format!("{e}. Recording continues without it."), true, self.icons.idle);
+                None
+            }
+        }
+    }
+
     /// Shows the in-game notice when the user wants it.
     fn notice(&self, near: Option<isize>, kind: crate::overlay::Kind, title: &str, detail: &str, hold_ms: Option<u32>) {
         if self.cfg.overlay.enabled {
@@ -1055,7 +1086,12 @@ impl App {
         let restart = old.video != self.cfg.video
             || old.replay_seconds != self.cfg.replay_seconds
             || old.audio != self.cfg.audio
-            || old.games != self.cfg.games;
+            || old.games != self.cfg.games
+            || old.webcam != self.cfg.webcam;
+        if old.webcam != self.cfg.webcam {
+            self.webcam = None;
+            self.webcam_failed = false;
+        }
         if restart {
             // New encoder settings need new sessions; buffers start again.
             for s in &mut self.sessions {

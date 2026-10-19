@@ -51,8 +51,9 @@ pub fn handle(mode: &str, args: &[String]) -> bool {
             logger::init("selftest", true);
             init_media(true);
             let secs = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(8);
-            let codec = args.get(2).map(String::as_str);
-            std::process::exit(if selftest(secs, codec) { 0 } else { 1 });
+            let codec = args.get(2).map(String::as_str).filter(|a| !a.starts_with("--"));
+            let webcam = args.iter().any(|a| a == "--webcam");
+            std::process::exit(if selftest(secs, codec, webcam) { 0 } else { 1 });
         }
         "--verify" => {
             logger::init("probe", false);
@@ -177,7 +178,7 @@ fn probe() {
 }
 
 /// Records the primary monitor (plus microphone) and verifies the clip.
-fn selftest(secs: u64, codec: Option<&str>) -> bool {
+fn selftest(secs: u64, codec: Option<&str>, with_webcam: bool) -> bool {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint};
 
@@ -203,7 +204,19 @@ fn selftest(secs: u64, codec: Option<&str>) -> bool {
     let (mw, mh) = detect::monitor_size(fg.0 as isize);
     let out = cfg.video.resolution.output_size(mw, mh);
     let game = session::GameInfo { pid: std::process::id(), hwnd: 0, exe: "selftest".into(), name: "Self test".into() };
-    let mut s = session::Session::start(gpu, game, capture::Target::Monitor(mon.0 as isize), &cfg, out, |_, end| {
+    let cam = if with_webcam {
+        match crate::webcam::Webcam::start(gpu.clone(), &cfg.webcam.device) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                println!("FAIL: webcam: {e}");
+                return false;
+            }
+        }
+    } else {
+        None
+    };
+    let cam_frames = cam.as_ref().map(|w| w.frames.clone());
+    let mut s = session::Session::start(gpu, game, capture::Target::Monitor(mon.0 as isize), &cfg, out, cam, |_, end| {
         if let session::SessionEnd::Failed(e) = end {
             println!("session failed: {e}");
         }
@@ -296,6 +309,9 @@ fn selftest(secs: u64, codec: Option<&str>) -> bool {
     if keys.len() >= 2 {
         let gaps: Vec<f64> = keys.windows(2).map(|w| (w[1] - w[0]) as f64 / 1e7).collect();
         println!("keyframe spacing: {:.2}-{:.2} s", gaps.iter().cloned().fold(f64::MAX, f64::min), gaps.iter().cloned().fold(0.0, f64::max));
+    }
+    if let Some(f) = &cam_frames {
+        println!("webcam frames: {}", f.load(std::sync::atomic::Ordering::Acquire));
     }
     println!(
         "audio packets: game {}, mic {}",
