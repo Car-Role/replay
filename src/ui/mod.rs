@@ -130,7 +130,7 @@ impl Shared {
         let share = self.cfg.share.clone();
         let label = format!("Uploading {}", path.file_name().unwrap_or_default().to_string_lossy());
         self.spawn_job(ctx, JobKind::Upload, label, move |progress| {
-            let password = crate::share::unprotect(&share.streamable_password_protected).unwrap_or_default();
+            let password = crate::sys::secret::unprotect(&share.streamable_password_protected).unwrap_or_default();
             let r = crate::share::upload_streamable(&path, &share.streamable_email, &password, &|sent, total| {
                 progress(sent as f32 / total.max(1) as f32)
             });
@@ -185,7 +185,7 @@ impl LibraryApp {
                     let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
                 }
                 while let Ok(p) = thumb_req_rx.recv() {
-                    if let Some((w, h, px)) = crate::win::thumbnail(&p, 192, 108) {
+                    if let Some((w, h, px)) = crate::sys::shell::thumbnail(&p, 192, 108) {
                         let _ = thumb_done_tx.send((p, w, h, px));
                         tctx.request_repaint();
                     }
@@ -278,7 +278,7 @@ impl LibraryApp {
                     if let Ok(t) = serde_json::to_string_pretty(&self.shared.uploads) {
                         let _ = std::fs::write(uploads_path(), t);
                     }
-                    let copied = self.shared.cfg.share.copy_link_after_upload && crate::share::copy_text(&url);
+                    let copied = self.shared.cfg.share.copy_link_after_upload && crate::sys::shell::copy_text(&url);
                     let msg = if copied { "Uploaded. Link copied." } else { "Uploaded." };
                     self.shared.toast_link(msg, url);
                 }
@@ -297,7 +297,7 @@ impl LibraryApp {
             ui.selectable_value(&mut self.tab, Tab::Clips, RichText::new("Clips").size(15.0));
             ui.selectable_value(&mut self.tab, Tab::Settings, RichText::new("Settings").size(15.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if crate::win::recorder_running() {
+                if crate::sys::shell::recorder_running() {
                     ui.label(RichText::new("Recorder running").color(Color32::from_rgb(0x4c, 0xaf, 0x50)));
                 } else {
                     if ui.button("Start recorder").clicked()
@@ -320,7 +320,7 @@ impl LibraryApp {
         ui.horizontal(|ui| {
             if ui.button("Open folder").clicked() {
                 let _ = std::fs::create_dir_all(&self.shared.cfg.output_dir);
-                crate::win::open_path(&self.shared.cfg.output_dir);
+                crate::sys::shell::open_path(&self.shared.cfg.output_dir);
             }
             if ui.button("Refresh").clicked() {
                 self.rescan(&ctx);
@@ -459,7 +459,7 @@ impl LibraryApp {
                     if let Some(link) = t.link.clone() {
                         ui.hyperlink(&link);
                         if ui.small_button("Copy link").clicked() {
-                            crate::share::copy_text(&link);
+                            crate::sys::shell::copy_text(&link);
                         }
                     }
                     ui.ctx().request_repaint_after(Duration::from_secs(1));
@@ -485,7 +485,7 @@ impl LibraryApp {
                             self.editor = None;
                             self.selected = None;
                         }
-                        if crate::win::recycle(&paths) {
+                        if crate::sys::shell::recycle(&paths) {
                             self.shared.toast(format!("Moved {} clip(s) to the Recycle Bin", paths.len()), false);
                         } else {
                             self.shared.toast("Could not delete the clip (is it open in another program?)", true);

@@ -25,13 +25,13 @@ impl Log for FileLogger {
         let t = crate::util::local_time();
         let line = format!(
             "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03} {:5} [{}] {}\n",
-            t.wYear,
-            t.wMonth,
-            t.wDay,
-            t.wHour,
-            t.wMinute,
-            t.wSecond,
-            t.wMilliseconds,
+            t.year,
+            t.month,
+            t.day,
+            t.hour,
+            t.minute,
+            t.second,
+            t.millis,
             r.level(),
             r.target().trim_start_matches("replay::"),
             r.args()

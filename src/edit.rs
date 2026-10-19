@@ -7,7 +7,8 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use crate::audio::{AAC_FRAME, AacDecoder, CHANNELS, SAMPLE_RATE, mix_into};
+use crate::media::{AAC_FRAME, CHANNELS, SAMPLE_RATE, mix_into};
+use crate::sys::aac::AacDecoder;
 use crate::clip::{AudioTrackData, audio_track, encode_track, write_tracks};
 use crate::mux::mp4::{SampleInfo, Track, TrackKind, VIDEO_TIMESCALE};
 use crate::mux::reader::{self, Mp4In, TrackIn, TrackKindIn, read_sample};
@@ -47,7 +48,7 @@ pub fn decode_range(file: &mut File, track: &TrackIn, from: f64, to: f64) -> Res
     }
     let frames = ((to - from).max(0.0) * f64::from(SAMPLE_RATE)).round() as usize;
     let mut out = vec![0i16; frames * CHANNELS as usize];
-    let mut dec = AacDecoder::new(asc).map_err(|e| e.to_string())?;
+    let mut dec = AacDecoder::new(asc)?;
     let frame_secs = AAC_FRAME as f64 / f64::from(SAMPLE_RATE);
     // Start two frames early: AAC frames overlap, so the first decoded frame is not clean.
     let first = (0..track.samples.len()).find(|&i| track.seconds(i) + frame_secs > from).unwrap_or(track.samples.len());
@@ -61,7 +62,7 @@ pub fn decode_range(file: &mut File, track: &TrackIn, from: f64, to: f64) -> Res
         }
         read_sample(file, &track.samples[i], &mut buf).map_err(|e| e.to_string())?;
         pcm.clear();
-        dec.decode(&buf, &mut pcm).map_err(|e| e.to_string())?;
+        dec.decode(&buf, &mut pcm)?;
         if i < first {
             continue;
         }
@@ -155,7 +156,7 @@ pub fn export(segments: &[Segment], out: &Path, mix: &Mix, progress: &(dyn Fn(f3
     }
 
     let mut audio: Vec<AudioTrackData> = Vec::new();
-    let enc = |name: &str, pcm: &[i16]| encode_track(name, pcm, mix.bitrate_kbps).map_err(|e| e.to_string());
+    let enc = |name: &str, pcm: &[i16]| encode_track(name, pcm, mix.bitrate_kbps);
     match (&game_pcm, &mic_pcm) {
         (Some(g), Some(m)) => {
             let mut mixed = vec![0i16; g.len()];

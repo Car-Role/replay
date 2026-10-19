@@ -10,7 +10,8 @@ use eframe::egui::{self, Color32, Key, Pos2, Rect, RichText, Sense, Stroke, Text
 use super::{JobDone, JobKind, Shared, fmt_time};
 use crate::config::Config;
 use crate::edit::{self, Mix, Segment};
-use crate::player::{AudioOut, AudioTracks, Frame, VideoDecoder, WallClock};
+use crate::media::{AudioTracks, Frame, WallClock};
+use crate::sys::player::{AudioOut, VideoDecoder};
 
 pub enum Action {
     Delete(PathBuf),
@@ -316,7 +317,7 @@ impl Editor {
                 });
             }
             if ui.button("Copy file").on_hover_text("Paste with Ctrl+V into Discord, Slack or a folder.").clicked() {
-                if crate::share::copy_file(&self.path) {
+                if crate::sys::shell::copy_file(&self.path) {
                     shared.toast("File copied. Paste it with Ctrl+V.", false);
                 } else {
                     shared.toast("Could not use the clipboard.", true);
@@ -333,7 +334,7 @@ impl Editor {
                 }
             }
             if ui.button("Show in folder").clicked() {
-                crate::share::reveal(&self.path);
+                crate::sys::shell::reveal(&self.path);
             }
             if ui.button("Delete").clicked() {
                 action = Some(Action::Delete(self.path.clone()));
@@ -344,7 +345,7 @@ impl Editor {
                 ui.label("Shared at");
                 ui.hyperlink(&url);
                 if ui.small_button("Copy link").clicked() {
-                    crate::share::copy_text(&url);
+                    crate::sys::shell::copy_text(&url);
                     shared.toast("Link copied.", false);
                 }
             });

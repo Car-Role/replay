@@ -347,7 +347,14 @@ impl App {
             }
             match crate::hotkey::parse(&text) {
                 Ok(h) => unsafe {
-                    if RegisterHotKey(Some(self.hwnd), id, h.mods, h.vk).is_err() {
+                    use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN};
+                    let mut mods = MOD_NOREPEAT;
+                    for (on, m) in [(h.ctrl, MOD_CONTROL), (h.alt, MOD_ALT), (h.shift, MOD_SHIFT), (h.win, MOD_WIN)] {
+                        if on {
+                            mods |= m;
+                        }
+                    }
+                    if RegisterHotKey(Some(self.hwnd), id, mods, h.vk).is_err() {
                         if announce {
                             log::warn!("hotkey {text} is taken by another program");
                         }
@@ -666,7 +673,7 @@ impl App {
         match r {
             Ok(url) => {
                 if self.cfg.share.copy_link_after_upload {
-                    crate::share::copy_text(&url);
+                    crate::sys::shell::copy_text(&url);
                 }
                 let msg = if self.cfg.share.copy_link_after_upload { format!("{url}\nLink copied.") } else { url };
                 tray::balloon(self.hwnd, "Replay uploaded", &msg, false, self.icons.recording);

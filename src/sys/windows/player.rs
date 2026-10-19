@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use windows::Win32::Media::Audio::*;
 use windows::Win32::Media::MediaFoundation::*;
@@ -22,13 +22,7 @@ use windows::core::{GUID, HSTRING};
 
 use crate::audio::{CHANNELS, SAMPLE_RATE};
 
-pub struct Frame {
-    pub generation: u64,
-    pub pts: f64,
-    pub width: usize,
-    pub height: usize,
-    pub rgba: Vec<u8>,
-}
+use crate::media::{AudioTracks, Frame};
 
 enum Cmd {
     Seek(f64, u64),
@@ -196,11 +190,6 @@ fn decode_loop(path: &Path, cmd: &Receiver<Cmd>, out: &SyncSender<Frame>, wake: 
 
 // ------------------------------------------------------------------ audio
 
-pub struct AudioTracks {
-    pub game: Option<Vec<i16>>,
-    pub mic: Option<Vec<i16>>,
-}
-
 struct Shared {
     playing: AtomicBool,
     /// Next frame to write.
@@ -356,33 +345,5 @@ fn render_loop(s: &Shared, tracks: &AudioTracks, total: u64) -> windows::core::R
         }
         let _ = client.Stop();
         Ok(())
-    }
-}
-
-/// Wall clock for clips without audio (or when no output device exists).
-pub struct WallClock {
-    base: f64,
-    since: Option<Instant>,
-}
-
-impl WallClock {
-    pub fn new() -> Self {
-        Self { base: 0.0, since: None }
-    }
-    pub fn position(&self) -> f64 {
-        self.base + self.since.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0)
-    }
-    pub fn set_playing(&mut self, on: bool) {
-        if on && self.since.is_none() {
-            self.since = Some(Instant::now());
-        } else if !on && let Some(t) = self.since.take() {
-            self.base += t.elapsed().as_secs_f64();
-        }
-    }
-    pub fn seek(&mut self, s: f64) {
-        self.base = s;
-        if self.since.is_some() {
-            self.since = Some(Instant::now());
-        }
     }
 }

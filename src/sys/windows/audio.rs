@@ -26,9 +26,7 @@ use windows::core::{GUID, HSTRING, IUnknown, Interface, Result, implement, w};
 
 use crate::ring::{PacketRing, TICKS_PER_SEC, Ticks};
 
-pub const SAMPLE_RATE: u32 = 48_000;
-pub const CHANNELS: u32 = 2;
-pub const AAC_FRAME: usize = 1024;
+pub use crate::media::{AAC_FRAME, CHANNELS, SAMPLE_RATE};
 
 #[derive(Clone, Debug)]
 pub enum Source {
@@ -514,16 +512,6 @@ fn capture_loop(s: &Stream, timeline: &mut Timeline, pcm: &mut Vec<i16>, stop: &
     Ok(())
 }
 
-/// Mixes two PCM streams with gains in percent, saturating.
-pub fn mix_into(dst: &mut [i16], src: &[i16], dst_gain: u32, src_gain: u32) {
-    let g1 = dst_gain as i32;
-    let g2 = src_gain as i32;
-    for (d, s) in dst.iter_mut().zip(src.iter()) {
-        let v = (i32::from(*d) * g1 + i32::from(*s) * g2) / 100;
-        *d = v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-    }
-}
-
 /// Microphones that are active now, as (endpoint id, friendly name).
 pub fn list_microphones() -> Vec<(String, String)> {
     use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
@@ -554,16 +542,6 @@ pub fn list_microphones() -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mixing_saturates() {
-        let mut a = [30000i16, -30000, 100];
-        mix_into(&mut a, &[30000, -30000, 100], 100, 100);
-        assert_eq!(a, [i16::MAX, i16::MIN, 200]);
-        let mut b = [1000i16];
-        mix_into(&mut b, &[1000], 50, 200);
-        assert_eq!(b, [2500]);
-    }
 
     #[test]
     fn tick_frame_conversion() {

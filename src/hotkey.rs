@@ -1,25 +1,28 @@
-//! Parses hotkey text such as `Alt+Shift+F10` into RegisterHotKey arguments.
+//! Parses hotkey text such as `Alt+Shift+F10`.
+//!
+//! Keys are stored as Windows virtual-key codes, which every backend maps
+//! to its own key codes. "Win" means Command on macOS and Super on Linux.
 
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
-};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Hotkey {
-    pub mods: HOT_KEY_MODIFIERS,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub win: bool,
+    /// Windows virtual-key code (F1 = 0x70, A = 0x41, 0 = 0x30, ...).
     pub vk: u32,
 }
 
 pub fn parse(text: &str) -> Result<Hotkey, String> {
-    let mut mods = MOD_NOREPEAT;
+    let mut h = Hotkey::default();
     let mut vk = None;
     for part in text.split('+').map(str::trim).filter(|p| !p.is_empty()) {
         let up = part.to_ascii_uppercase();
         match up.as_str() {
-            "CTRL" | "CONTROL" => mods |= MOD_CONTROL,
-            "ALT" => mods |= MOD_ALT,
-            "SHIFT" => mods |= MOD_SHIFT,
-            "WIN" | "WINDOWS" | "SUPER" => mods |= MOD_WIN,
+            "CTRL" | "CONTROL" => h.ctrl = true,
+            "ALT" | "OPTION" => h.alt = true,
+            "SHIFT" => h.shift = true,
+            "WIN" | "WINDOWS" | "SUPER" | "CMD" | "COMMAND" | "META" => h.win = true,
             _ => {
                 if vk.is_some() {
                     return Err(format!("\"{text}\" has more than one key"));
@@ -28,8 +31,8 @@ pub fn parse(text: &str) -> Result<Hotkey, String> {
             }
         }
     }
-    let vk = vk.ok_or_else(|| format!("\"{text}\" has no key"))?;
-    Ok(Hotkey { mods, vk })
+    h.vk = vk.ok_or_else(|| format!("\"{text}\" has no key"))?;
+    Ok(h)
 }
 
 fn key_code(k: &str) -> Option<u32> {
@@ -75,11 +78,9 @@ mod tests {
     #[test]
     fn parses_common_keys() {
         let h = parse("Alt+F10").unwrap();
-        assert_eq!(h.vk, 0x79);
-        assert_eq!(h.mods, MOD_ALT | MOD_NOREPEAT);
+        assert_eq!(h, Hotkey { alt: true, vk: 0x79, ..Default::default() });
         let h = parse("ctrl + shift + s").unwrap();
-        assert_eq!(h.vk, u32::from(b'S'));
-        assert_eq!(h.mods, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT);
+        assert_eq!(h, Hotkey { ctrl: true, shift: true, vk: u32::from(b'S'), ..Default::default() });
         assert!(parse("Alt").is_err());
         assert!(parse("Alt+F25").is_err());
         assert!(parse("A+B").is_err());

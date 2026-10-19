@@ -19,16 +19,13 @@ const FPS: [u32; 5] = [30, 60, 120, 144, 240];
 
 impl SettingsPage {
     pub fn new(cfg: &Config) -> Self {
-        let encoders = Codec::ALL
-            .iter()
-            .map(|&c| (c, crate::encoder::find_encoders(c, None).map(|l| !l.is_empty()).unwrap_or(false)))
-            .collect();
+        let encoders = crate::sys::available_codecs();
         Self {
             draft: cfg.clone(),
             include_text: cfg.detection.include.join("\n"),
             exclude_text: cfg.detection.exclude.join("\n"),
             password: String::new(),
-            mics: crate::audio::list_microphones(),
+            mics: crate::sys::list_microphones(),
             encoders,
         }
     }
@@ -59,7 +56,7 @@ impl SettingsPage {
                         d.output_dir = text.into();
                     }
                     if ui.button("Browse...").clicked()
-                        && let Some(p) = crate::win::pick_folder()
+                        && let Some(p) = crate::sys::shell::pick_folder()
                     {
                         d.output_dir = p;
                     }
@@ -190,7 +187,7 @@ impl SettingsPage {
                 ui.vertical(|ui| {
                     ui.add(egui::TextEdit::multiline(&mut self.include_text).desired_rows(3).desired_width(360.0).hint_text("game.exe (one per line)"));
                     if ui.button("Add a program...").clicked()
-                        && let Some(p) = crate::win::pick_exe()
+                        && let Some(p) = crate::sys::shell::pick_exe()
                         && let Some(name) = p.file_name()
                     {
                         if !self.include_text.is_empty() && !self.include_text.ends_with('\n') {
@@ -264,7 +261,7 @@ impl SettingsPage {
         c.detection.include = Self::lines(&self.include_text);
         c.detection.exclude = Self::lines(&self.exclude_text);
         if !self.password.is_empty() {
-            c.share.streamable_password_protected = crate::share::protect(&self.password);
+            c.share.streamable_password_protected = crate::sys::secret::protect(&self.password);
         } else {
             c.share.streamable_password_protected = current.share.streamable_password_protected.clone();
         }
@@ -285,7 +282,7 @@ impl SettingsPage {
             shared.toast(format!("Fix the hotkey first: {e}"), true);
             return false;
         }
-        if new.start_with_windows != shared.cfg.start_with_windows && !crate::win::set_autostart(new.start_with_windows) {
+        if new.start_with_windows != shared.cfg.start_with_windows && !crate::sys::shell::set_autostart(new.start_with_windows) {
             shared.toast("Could not change the Windows startup setting.", true);
         }
         match new.save() {
@@ -294,7 +291,7 @@ impl SettingsPage {
                 shared.cfg = new.clone();
                 self.draft = new;
                 self.password.clear();
-                crate::win::notify_recorder(crate::app::WM_APP_RELOAD);
+                crate::sys::shell::notify_recorder_reload();
                 shared.toast("Settings saved.", false);
                 folder_changed
             }

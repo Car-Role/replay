@@ -139,6 +139,11 @@ pub fn recorder_running() -> bool {
     unsafe { windows::Win32::UI::WindowsAndMessaging::FindWindowW(crate::app::WINDOW_CLASS, None).is_ok() }
 }
 
+/// Tells the running recorder to reload its settings.
+pub fn notify_recorder_reload() {
+    notify_recorder(crate::app::WM_APP_RELOAD);
+}
+
 pub fn notify_recorder(msg: u32) {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
@@ -151,4 +156,71 @@ pub fn notify_recorder(msg: u32) {
 
 pub fn open_path(p: &Path) {
     let _ = std::process::Command::new("explorer.exe").arg(p).spawn();
+}
+
+/// Opens Explorer with the file selected.
+pub fn reveal(path: &Path) {
+    let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{}", path.display())).spawn();
+}
+
+unsafe fn set_clipboard(format: u32, bytes: &[u8]) -> bool {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::DataExchange::SetClipboardData;
+    use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+    unsafe {
+        let Ok(h) = GlobalAlloc(GMEM_MOVEABLE, bytes.len()) else { return false };
+        let p = GlobalLock(h);
+        if p.is_null() {
+            return false;
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p.cast::<u8>(), bytes.len());
+        let _ = GlobalUnlock(h);
+        SetClipboardData(format, Some(HANDLE(h.0))).is_ok()
+    }
+}
+
+fn with_clipboard(f: impl FnOnce()) -> bool {
+    use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard};
+    unsafe {
+        // Another app may hold the clipboard briefly.
+        for _ in 0..10 {
+            if OpenClipboard(None).is_ok() {
+                let _ = EmptyClipboard();
+                f();
+                let _ = CloseClipboard();
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        false
+    }
+}
+
+pub fn copy_text(text: &str) -> bool {
+    use windows::Win32::System::Ole::CF_UNICODETEXT;
+    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let bytes = unsafe { std::slice::from_raw_parts(wide.as_ptr().cast::<u8>(), wide.len() * 2) };
+    with_clipboard(|| unsafe {
+        set_clipboard(u32::from(CF_UNICODETEXT.0), bytes);
+    })
+}
+
+/// Puts the file on the clipboard, so Ctrl+V pastes it in Discord or Explorer.
+pub fn copy_file(path: &Path) -> bool {
+    use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
+    use windows::Win32::System::Ole::CF_HDROP;
+    use windows::Win32::UI::Shell::DROPFILES;
+    let header = size_of::<DROPFILES>();
+    let mut data = vec![0u8; header];
+    let df = DROPFILES { pFiles: header as u32, fWide: true.into(), ..Default::default() };
+    unsafe { std::ptr::write_unaligned(data.as_mut_ptr().cast::<DROPFILES>(), df) };
+    for c in path.as_os_str().to_string_lossy().encode_utf16().chain([0, 0]) {
+        data.extend_from_slice(&c.to_le_bytes());
+    }
+    let effect = 1u32.to_le_bytes(); // DROPEFFECT_COPY
+    with_clipboard(|| unsafe {
+        set_clipboard(u32::from(CF_HDROP.0), &data);
+        let fmt = RegisterClipboardFormatW(w!("Preferred DropEffect"));
+        set_clipboard(fmt, &effect);
+    })
 }

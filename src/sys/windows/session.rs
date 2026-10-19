@@ -32,16 +32,7 @@ pub struct GameInfo {
     pub name: String,
 }
 
-#[derive(Clone, Debug)]
-pub struct VideoState {
-    pub codec: Codec,
-    pub width: u32,
-    pub height: u32,
-    pub fps: u32,
-    pub params: ParamSets,
-    pub frames: u64,
-    pub dropped: u64,
-}
+pub use crate::media::VideoState;
 
 pub enum SessionEnd {
     WindowClosed,

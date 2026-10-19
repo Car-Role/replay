@@ -8,12 +8,12 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use crate::audio::{AAC_FRAME, AacDecoder, AacEncoder, CHANNELS, SAMPLE_RATE, mix_into};
+use crate::media::{AAC_FRAME, CHANNELS, SAMPLE_RATE, VideoState, mix_into};
+use crate::sys::aac::{AacDecoder, AacEncoder};
 use crate::config::Config;
 use crate::mux::bitstream::{aac_asc, av1c, avcc, find_param_sets, hvcc, to_mp4_sample};
 use crate::mux::mp4::{self, SampleInfo, Track, TrackKind, VIDEO_TIMESCALE};
 use crate::ring::{Packet, TICKS_PER_SEC, Ticks};
-use crate::session::VideoState;
 use crate::config::Codec;
 
 pub struct ClipSource {
@@ -49,7 +49,7 @@ pub fn clip_path(output_dir: &Path, game: &str) -> PathBuf {
     let dir = output_dir.join(&game);
     let stem = format!(
         "{game} {:04}-{:02}-{:02} {:02}-{:02}-{:02}",
-        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
+        t.year, t.month, t.day, t.hour, t.minute, t.second
     );
     let mut p = dir.join(format!("{stem}.mp4"));
     let mut n = 2;
@@ -76,7 +76,7 @@ fn audio_from_ring(name: &str, packets: &[Packet], t0: Ticks, t_end: Ticks) -> O
 }
 
 /// Decodes AAC tracks, mixes them with gains, and encodes a new track.
-pub fn mix_tracks(tracks: &[(&AudioTrackData, u32)], bitrate_kbps: u32) -> windows::core::Result<AudioTrackData> {
+pub fn mix_tracks(tracks: &[(&AudioTrackData, u32)], bitrate_kbps: u32) -> Result<AudioTrackData, String> {
     let asc = aac_asc(SAMPLE_RATE, CHANNELS);
     let mut mixed: Vec<i16> = Vec::new();
     for (i, (t, gain)) in tracks.iter().enumerate() {
@@ -160,7 +160,7 @@ pub fn audio_track(a: &AudioTrackData) -> Track {
 }
 
 /// Encodes PCM into an AAC track.
-pub fn encode_track(name: &str, pcm: &[i16], bitrate_kbps: u32) -> windows::core::Result<AudioTrackData> {
+pub fn encode_track(name: &str, pcm: &[i16], bitrate_kbps: u32) -> Result<AudioTrackData, String> {
     let mut enc = AacEncoder::new(bitrate_kbps)?;
     let mut packets = Vec::new();
     enc.encode(pcm, |p| packets.push(p.to_vec()))?;
