@@ -38,6 +38,16 @@ fn main() {
     update::finish_pending();
 
     match mode {
+        "--frame" => {
+            // replay --frame <clip> <seconds> <out.png>: saves one decoded frame.
+            logger::init("probe", false);
+            sys::init_ui();
+            let (Some(clip), Some(at), Some(out)) = (args.get(1), args.get(2), args.get(3)) else {
+                println!("usage: replay --frame <clip> <seconds> <out.png>");
+                std::process::exit(1);
+            };
+            std::process::exit(if ui::save_frame(std::path::Path::new(clip), at.parse().unwrap_or(0.0), std::path::Path::new(out)) { 0 } else { 1 });
+        }
         "--snapshot" => {
             logger::init("probe", false);
             sys::init_ui();

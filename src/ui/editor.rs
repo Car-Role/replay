@@ -585,7 +585,6 @@ impl Editor {
                 p.rect_filled(Rect::from_center_size(Pos2::new(x, keep.center().y), Vec2::new(8.0, 24.0)), CornerRadius::same(2), t.accent);
             }
             let tag = p.layout_no_wrap("Drag to frame".to_string(), FontId::proportional(12.0), Color32::WHITE);
-            p.rect_stroke(img, CornerRadius::ZERO, Stroke::new(1.0, Color32::from_white_alpha(40)), StrokeKind::Outside);
             let tr = Rect::from_center_size(Pos2::new(keep.center().x, keep.top() + 8.0 + (tag.size().y + 4.0) / 2.0), tag.size() + Vec2::new(12.0, 4.0));
             p.rect_filled(tr, CornerRadius::same(theme::R_CONTROL), Color32::from_black_alpha(170));
             p.galley(tr.min + Vec2::new(6.0, 2.0), tag, Color32::WHITE);
@@ -675,13 +674,7 @@ impl Editor {
             let o = self.out_point;
             go(self, o);
         }
-        ui.painter().text(
-            Pos2::new(r.right() - 4.0, r.center().y),
-            Align2::RIGHT_CENTER,
-            format!("Selection {}", theme::fmt_time(self.out_point - self.in_point)),
-            mono,
-            t.text2,
-        );
+        let _ = mono;
     }
 
     /// Filmstrip with trim handles. Dragging a handle or the playhead shows
@@ -706,7 +699,13 @@ impl Editor {
             let src = (((i as f32 + 0.5) / slots as f32) * THUMBS as f32) as usize;
             let r = Rect::from_min_size(Pos2::new(strip.left() + slot * i as f32, strip.top()), Vec2::new(slot, STRIP_H));
             let Some(tex) = self.film.get(src.min(THUMBS - 1)).and_then(|t| t.as_ref()) else {
-                p.rect_filled(r.shrink(1.0), CornerRadius::ZERO, t.card_hover);
+                // Loading: a soft light band moves across the empty tiles.
+                let phase = (ui.input(|i| i.time) * 0.8).fract() as f32;
+                let x = strip.left() + phase * strip.width();
+                let d = ((r.center().x - x).abs() / (strip.width() * 0.25)).min(1.0);
+                let base = t.card_hover;
+                p.rect_filled(r.shrink(1.0), CornerRadius::ZERO, base.lerp_to_gamma(t.control_hover, 1.0 - d));
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
                 continue;
             };
             let [tw, th] = tex.size();
@@ -851,7 +850,13 @@ impl Editor {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.set_min_height(ui.available_height());
-                let out = egui::ScrollArea::vertical().id_salt("inspector").auto_shrink([false, false]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).show(ui, |ui| {
+                let footer_h = 104.0;
+                let out = egui::ScrollArea::vertical()
+                    .id_salt("inspector")
+                    .auto_shrink([false, false])
+                    .max_height((ui.available_height() - footer_h).max(80.0))
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                    .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 8.0;
 
                     section(ui, t, "Trim", true, |ui| {
@@ -861,10 +866,11 @@ impl Editor {
                                 col.label(RichText::new(theme::fmt_time(v)).color(t.text));
                             }
                         });
+                        ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
                                 ui.label(RichText::new("Exact cut").color(t.text));
-                                ui.label(theme::caption(if self.exact { "Starts on the exact frame; encodes again" } else { "Fast; starts on the nearest keyframe" }).color(t.text2));
+                                ui.label(theme::caption(if self.exact { "Slower. Cuts on the exact frame." } else { "Fast. Starts on the nearest keyframe." }).color(t.text2));
                             });
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 theme::toggle(ui, t, &mut self.exact);
@@ -872,19 +878,21 @@ impl Editor {
                         });
                     });
 
-                    section(ui, t, "Audio", true, |ui| {
+                    section(ui, t, "Audio", false, |ui| {
                         let mut changed = false;
                         let mut row = |ui: &mut egui::Ui, c: char, label: &str, v: &mut u32| {
                             ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                let (ir, _) = ui.allocate_exact_size(Vec2::new(20.0, 24.0), Sense::hover());
                                 if icons {
-                                    ui.label(theme::glyph(c, 16.0).color(t.text2));
+                                    ui.painter().text(ir.center(), Align2::CENTER_CENTER, c, FontId::new(16.0, FontFamily::Name(theme::ICONS.into())), t.text2);
                                 }
-                                ui.add_sized(Vec2::new(36.0, 20.0), egui::Label::new(RichText::new(label).color(t.text)));
-                                let w = (ui.available_width() - 52.0).max(60.0);
+                                let (lr, _) = ui.allocate_exact_size(Vec2::new(44.0, 24.0), Sense::hover());
+                                ui.painter().text(lr.left_center(), Align2::LEFT_CENTER, label, FontId::proportional(14.0), t.text);
+                                let w = (ui.available_width() - 56.0).max(60.0);
                                 changed |= theme::slider(ui, t, v, 0..=200, false, w).changed();
-                                ui.allocate_ui_with_layout(Vec2::new(40.0, 20.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(theme::caption(format!("{v}%")).color(t.text2));
-                                });
+                                let (vr, _) = ui.allocate_exact_size(Vec2::new(40.0, 24.0), Sense::hover());
+                                ui.painter().text(vr.right_center(), Align2::RIGHT_CENTER, format!("{v}%"), FontId::proportional(12.0), t.text2);
                             });
                         };
                         if self.has_game {
@@ -909,8 +917,8 @@ impl Editor {
                         }
                     });
 
-                    section(ui, t, "Save", true, |ui| {
-                        self.export_section(ui, t, icons, shared, busy);
+                    section(ui, t, "Save as", true, |ui| {
+                        self.save_options(ui, t);
                     });
 
                     section(ui, t, "Details", false, |ui| {
@@ -938,22 +946,26 @@ impl Editor {
                     ui.add_space(4.0);
                     ui.label(theme::caption("Space play  \u{00b7}  I / O start and end  \u{00b7}  \u{2190} \u{2192} frame  \u{00b7}  Shift 1 s").color(t.text3));
                 });
-                // More below: fade the last 24 px into the panel.
+                // More below: fade the last 32 px into the panel.
                 if out.state.offset().y + out.inner_rect.height() < out.content_size.y - 1.0 {
                     let r = out.inner_rect;
-                    for i in 0..24 {
-                        let y = r.bottom() - 24.0 + i as f32;
-                        let a = (i as f32 / 24.0 * 255.0) as u8;
-                        ui.painter().line_segment([Pos2::new(r.left(), y), Pos2::new(r.right() - 8.0, y)], Stroke::new(1.0, t.card.gamma_multiply(f32::from(a) / 255.0)));
+                    for i in 0..32 {
+                        let y = r.bottom() - 32.0 + i as f32;
+                        let a = (i as f32 / 32.0).powf(0.7);
+                        ui.painter().line_segment([Pos2::new(r.left(), y), Pos2::new(r.right() - 8.0, y)], Stroke::new(1.0, t.card.gamma_multiply(a)));
                     }
                 }
+                // Pinned footer: what comes out, and the button that saves it.
+                let (d, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 9.0), Sense::hover());
+                ui.painter().line_segment([Pos2::new(d.left() - 16.0, d.center().y), Pos2::new(d.right() + 16.0, d.center().y)], Stroke::new(1.0, t.divider));
+                self.save_footer(ui, t, icons, shared, busy);
             });
         None
     }
 
     /// Export for Discord, phones or a custom size: the selection is encoded
     /// again with H.264, which every app and site plays.
-    fn export_section(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared, busy: bool) {
+    fn save_options(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         let ctx = ui.ctx().clone();
         let _ = &ctx;
         ui.label(theme::caption("Size").color(t.text2));
@@ -976,9 +988,9 @@ impl Editor {
             let half = (ui.available_width() - 6.0) / 2.0;
             for (v, label, hint) in [(false, "Landscape", "As recorded"), (true, "Vertical 9:16", "For Shorts, TikTok and Reels")] {
                 let on = self.vertical == v;
-                let b = egui::Button::new(RichText::new(label).color(t.text))
+                let b = egui::Button::new(RichText::new(label).color(if on { t.text } else { t.text2 }))
                     .fill(if on { if t.dark { Color32::from_gray(58) } else { Color32::from_gray(230) } } else { t.control })
-                    .stroke(Stroke::new(1.0, if on { t.accent } else { t.control_stroke }))
+                    .stroke(Stroke::new(if on { 1.5 } else { 1.0 }, if on { t.accent } else { t.control_stroke }))
                     .min_size(Vec2::new(half, theme::CONTROL_H));
                 if ui.add(b).on_hover_text(hint).clicked() {
                     self.vertical = v;
@@ -986,6 +998,11 @@ impl Editor {
             }
         });
 
+    }
+
+    /// The pinned footer: estimate, notes and "Save a copy".
+    fn save_footer(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared, busy: bool) {
+        let ctx = ui.ctx().clone();
         // What comes out.
         let secs = (self.out_point - self.in_point).max(0.1);
         let size_mb = self.preset.size_mb(self.custom_mb);

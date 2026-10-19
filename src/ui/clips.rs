@@ -622,6 +622,9 @@ impl LibraryApp {
                             if b(ui, icon::VIDEO, "Montage", n >= 2).on_hover_text("Choose the order and add music").on_disabled_hover_text("Select two or more clips").clicked() {
                                 action = Some("montage");
                             }
+                            if b(ui, icon::COPY, "Copy", true).on_hover_text("Copy the files, then paste them into Discord or a folder").clicked() {
+                                action = Some("copy");
+                            }
                             if b(ui, icon::TAG, "Tags", true).clicked() {
                                 action = Some("tags");
                             }
@@ -658,6 +661,12 @@ impl LibraryApp {
                 self.delete_clips(paths);
             }
             Some("clear") => self.gallery.checked.clear(),
+            Some("copy") => {
+                let paths: Vec<PathBuf> = self.gallery.checked.iter().cloned().collect();
+                if crate::sys::shell::copy_files(&paths) {
+                    self.shared.toast(format!("Copied {} {}. Paste them with Ctrl+V.", paths.len(), if paths.len() == 1 { "clip" } else { "clips" }), false);
+                }
+            }
             _ => {}
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.dialog.is_none() && self.montage.is_none() {

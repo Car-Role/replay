@@ -96,7 +96,8 @@ impl LibraryApp {
         // The first page waits for thumbnails; the editor for its first frame.
         let settle = match step {
             Step::Clips => 3500,
-            Step::Editor | Step::EditorVertical => 2500,
+            Step::Editor => 6000,
+            Step::EditorVertical => 1500,
             Step::Compact => 1200,
             _ => 700,
         };

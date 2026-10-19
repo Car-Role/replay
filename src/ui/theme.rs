@@ -568,7 +568,7 @@ pub fn button_w(ui: &mut Ui, text: impl Into<WidgetText>, w: f32) -> Response {
 
 /// A filter chip: rounded, accent-filled when on.
 pub fn chip(ui: &mut Ui, t: &Tokens, text: impl Into<String>, on: bool) -> Response {
-    let b = egui::Button::new(RichText::new(text).size(14.0).color(t.text))
+    let b = egui::Button::new(RichText::new(text).size(14.0).color(if on { t.text } else { t.text2 }))
         .fill(if on { if t.dark { argb(0xFF3A_3A3A) } else { argb(0xFFE6_E6E6) } } else { t.control })
         .stroke(if on { Stroke::new(1.0, t.accent) } else { Stroke::new(1.0, t.control_stroke) })
         .corner_radius(CornerRadius::same(14))
@@ -590,9 +590,8 @@ pub fn combo<'a>(id: impl egui::AsIdSalt + std::fmt::Debug) -> egui::ComboBox<'a
 /// A slider with its value right-aligned in a fixed box, filling the
 /// control column.
 pub fn slider_row(ui: &mut Ui, t: &Tokens, value: String, v: &mut u32, range: std::ops::RangeInclusive<u32>, log: bool) -> Response {
-    ui.allocate_ui_with_layout(Vec2::new(60.0, 20.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.label(RichText::new(value).color(t.text2));
-    });
+    let (r, _) = ui.allocate_exact_size(Vec2::new(60.0, 20.0), Sense::hover());
+    ui.painter().text(egui::pos2(r.right(), r.center().y), egui::Align2::RIGHT_CENTER, value, FontId::proportional(14.0), t.text2);
     slider(ui, t, v, range, log, CONTROL_COL - 68.0)
 }
 
@@ -676,7 +675,13 @@ pub fn rail_button(ui: &mut Ui, t: &Tokens, icons: bool, c: char, label: &str, r
         t.control
     };
     let p = ui.painter();
-    p.rect(rect, R_CONTROL, fill, Stroke::new(1.0, t.control_stroke), egui::StrokeKind::Inside);
+    if compact {
+        if enabled && resp.hovered() {
+            p.rect_filled(rect, R_CONTROL, t.subtle_hover);
+        }
+    } else {
+        p.rect(rect, R_CONTROL, fill, Stroke::new(1.0, t.control_stroke), egui::StrokeKind::Inside);
+    }
     let fg = if enabled { t.text } else { t.text_disabled };
     let ic = if enabled { icon_color } else { t.text_disabled };
     let icon_font = FontId::new(16.0, FontFamily::Name(ICONS.into()));
@@ -706,6 +711,13 @@ pub fn focus_ring(ui: &Ui, t: &Tokens, resp: &Response, rect: egui::Rect, radius
 }
 
 /// Section header inside a page (Body strong, Windows Settings style).
+/// The first section header on a page: no extra space above it.
+pub fn section_first(ui: &mut Ui, t: &Tokens, text: &str) {
+    ui.add_space(4.0);
+    ui.label(body_strong(text).color(t.text));
+    ui.add_space(4.0);
+}
+
 pub fn section(ui: &mut Ui, t: &Tokens, text: &str) {
     ui.add_space(24.0);
     ui.label(body_strong(text).color(t.text));

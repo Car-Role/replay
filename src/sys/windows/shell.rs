@@ -234,6 +234,11 @@ pub fn copy_text(text: &str) -> bool {
 
 /// Puts the file on the clipboard, so Ctrl+V pastes it in Discord or Explorer.
 pub fn copy_file(path: &Path) -> bool {
+    copy_files(&[path.to_path_buf()])
+}
+
+/// Puts files on the clipboard, ready to paste into Discord or a folder.
+pub fn copy_files(paths: &[PathBuf]) -> bool {
     use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
     use windows::Win32::System::Ole::CF_HDROP;
     use windows::Win32::UI::Shell::DROPFILES;
@@ -241,9 +246,12 @@ pub fn copy_file(path: &Path) -> bool {
     let mut data = vec![0u8; header];
     let df = DROPFILES { pFiles: header as u32, fWide: true.into(), ..Default::default() };
     unsafe { std::ptr::write_unaligned(data.as_mut_ptr().cast::<DROPFILES>(), df) };
-    for c in path.as_os_str().to_string_lossy().encode_utf16().chain([0, 0]) {
-        data.extend_from_slice(&c.to_le_bytes());
+    for p in paths {
+        for c in p.as_os_str().to_string_lossy().encode_utf16().chain([0]) {
+            data.extend_from_slice(&c.to_le_bytes());
+        }
     }
+    data.extend_from_slice(&0u16.to_le_bytes());
     let effect = 1u32.to_le_bytes(); // DROPEFFECT_COPY
     with_clipboard(|| unsafe {
         set_clipboard(u32::from(CF_HDROP.0), &data);

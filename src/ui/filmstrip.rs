@@ -27,9 +27,15 @@ pub fn build(path: &Path, duration: f64, count: usize, thumb_h: usize, wake: imp
                 let t = duration * (i as f64 + 0.5) / count as f64;
                 let generation = i as u64 + 1;
                 dec.seek(t, generation);
+                let mut skipped = 0;
                 let deadline = std::time::Instant::now() + Duration::from_secs(4);
                 while std::time::Instant::now() < deadline {
                     match dec.frames.recv_timeout(Duration::from_millis(500)) {
+                        // The first frames after a seek can be black while the
+                        // decoder settles; take the next one (1/60 s later).
+                        Ok(f) if f.generation == generation && is_black(&f.rgba) && skipped < 6 => {
+                            skipped += 1;
+                        }
                         Ok(f) if f.generation == generation => {
                             let (w, h, rgba) = shrink(&f.rgba, f.width, f.height, thumb_h);
                             if tx.send(Thumb { index: i, width: w, height: h, rgba }).is_err() {
@@ -47,6 +53,21 @@ pub fn build(path: &Path, duration: f64, count: usize, thumb_h: usize, wake: imp
         })
         .ok();
     rx
+}
+
+/// True when almost every sampled pixel is near black.
+fn is_black(rgba: &[u8]) -> bool {
+    let step = (rgba.len() / 4 / 2000).max(1) * 4;
+    let (mut n, mut dark) = (0, 0);
+    let mut i = 0;
+    while i + 3 < rgba.len() {
+        n += 1;
+        if u16::from(rgba[i]) + u16::from(rgba[i + 1]) + u16::from(rgba[i + 2]) < 24 {
+            dark += 1;
+        }
+        i += step;
+    }
+    n > 0 && dark * 100 / n >= 97
 }
 
 /// Box-filter downscale of an RGBA image to height `th`.

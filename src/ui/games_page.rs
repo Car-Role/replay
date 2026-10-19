@@ -150,7 +150,7 @@ impl LibraryApp {
             ),
         };
         ui.label(RichText::new(sentence).color(t.text2));
-        ui.add_space(16.0);
+        ui.add_space(8.0);
 
         if list.is_empty() {
             ui.add_space(48.0);
@@ -172,11 +172,33 @@ impl LibraryApp {
         let mut open = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
+            let mut first = true;
             for (title, group) in [("Recording now", &recording), ("Your games", &on), ("Turned off", &off)] {
                 if group.is_empty() {
                     continue;
                 }
-                theme::section(ui, t, title);
+                if std::ptr::eq(group, &off) {
+                    // Apps turned off are rarely needed: keep them folded.
+                    let id = ui.id().with("show-off");
+                    let mut open = ui.data_mut(|d| *d.get_temp_mut_or(id, false));
+                    if !first {
+                        ui.add_space(24.0);
+                    }
+                    let label = format!("{} turned off ({})", if open { "Hide" } else { "Show" }, group.len());
+                    let chevron = if open { icon::CHEVRON_UP } else { icon::CHEVRON_DOWN };
+                    if ui.add(egui::Button::new(theme::icon_label(self.shared.icons, chevron, &label, t.text2)).frame_when_inactive(false)).clicked() {
+                        open = !open;
+                        ui.data_mut(|d| d.insert_temp(id, open));
+                    }
+                    if !open {
+                        continue;
+                    }
+                } else if first {
+                    theme::section_first(ui, t, title);
+                } else {
+                    theme::section(ui, t, title);
+                }
+                first = false;
                 for g in group.iter() {
                     match self.game_row(ui, t, g) {
                         Some(RowClick::Toggle(v)) => toggle = Some((g.exe.clone(), g.name.clone(), v, g.how == "Added by you")),
@@ -214,8 +236,6 @@ impl LibraryApp {
                 ui.label(theme::body_strong(&g.name).color(if enabled { t.text } else { t.text2 }));
                 if g.capturing {
                     pill(ui, t.recording, "Recording session");
-                } else if g.recording {
-                    pill(ui, t.success, "Replay on");
                 }
                 if own {
                     pill(ui, t.text2, "Own settings");
@@ -359,9 +379,9 @@ impl LibraryApp {
                 }
             });
 
-            theme::section(ui, t, "Remove");
+            ui.add_space(24.0);
             theme::setting(ui, t, false, None, "Remove from this list", "Replay adds it again if you play it and it is detected", |ui| {
-                if ui.add(egui::Button::new(theme::icon_label(icons, icon::DELETE, "Remove", t.critical)).min_size(Vec2::new(0.0, theme::CONTROL_H))).clicked() {
+                if ui.add(egui::Button::new(theme::label_with_icon(icons, icon::DELETE, "Remove")).min_size(Vec2::new(0.0, theme::CONTROL_H))).clicked() {
                     forget = true;
                 }
             });

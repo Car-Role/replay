@@ -51,6 +51,23 @@ pub fn snapshot(dir: PathBuf) {
     }
 }
 
+/// `replay --frame`: decodes the frame at `at` seconds and saves it as PNG.
+pub fn save_frame(clip: &Path, at: f64, out: &Path) -> bool {
+    let dec = crate::sys::player::VideoDecoder::open(clip, || {});
+    dec.seek(at, 1);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Ok(f) = dec.frames.recv_timeout(Duration::from_millis(500))
+            && f.generation == 1
+        {
+            println!("frame at {:.3} s, {}x{}", f.pts, f.width, f.height);
+            return snapshot::write_png(out, f.width, f.height, &f.rgba).is_ok();
+        }
+    }
+    println!("no frame decoded");
+    false
+}
+
 pub fn run(open: Option<PathBuf>, start: &str) {
     let start = start.to_string();
     let icon = egui::IconData { rgba: include_bytes!("../../assets/generated/icon-64.rgba").to_vec(), width: 64, height: 64 };
@@ -505,7 +522,7 @@ impl LibraryApp {
         };
         let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
         // A divider sets the status apart from the pages above.
-        ui.painter().line_segment([Pos2::new(rect.left() + 8.0, rect.top()), Pos2::new(rect.right() - 8.0, rect.top())], Stroke::new(1.0, t.divider));
+        ui.painter().line_segment([Pos2::new(rect.left(), rect.top()), Pos2::new(rect.right(), rect.top())], Stroke::new(1.0, t.divider));
         let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(0.0, 8.0))).layout(egui::Layout::top_down(egui::Align::Min)));
         let ui = &mut inner;
         ui.spacing_mut().item_spacing.y = 6.0;
@@ -517,6 +534,11 @@ impl LibraryApp {
         let (r, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), if compact { 20.0 } else { 40.0 }), Sense::hover());
         if compact {
             ui.painter().circle_filled(r.center(), 5.0, dot.gamma_multiply(pulse));
+            let short = line.rsplit(' ').next().unwrap_or("").to_string();
+            let (sr, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 14.0), Sense::hover());
+            if short.contains(':') {
+                ui.painter().text(sr.center(), Align2::CENTER_CENTER, short, egui::FontId::proportional(12.0), t.text2);
+            }
         } else {
             ui.painter().circle_filled(Pos2::new(r.left() + 22.0, r.top() + 10.0), 5.0, dot.gamma_multiply(pulse));
             ui.painter().text(Pos2::new(r.left() + 44.0, r.top() + 10.0), Align2::LEFT_CENTER, &line, egui::FontId::new(14.0, egui::FontFamily::Name(theme::SEMIBOLD.into())), t.text);
@@ -550,7 +572,7 @@ impl LibraryApp {
                     self.shared.toast("The recorder is not running.", true);
                 }
             }
-            let r = theme::rail_button(ui, t, icons, icon::RECORD, "Record session", &rec_key, t.recording, ready, compact);
+            let r = theme::rail_button(ui, t, icons, icon::RECORD, "Record session", &rec_key, t.text2, ready, compact);
             if r.on_hover_text(format!("Record the whole session ({rec_key})")).clicked() {
                 crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::Record);
                 self.recorder_checked = Instant::now() - Duration::from_millis(800);
@@ -658,6 +680,7 @@ impl LibraryApp {
     /// primary button and Cancel on the right. Returns Some(true) for the
     /// primary button (or Enter), Some(false) to close.
     fn content_dialog(ctx: &egui::Context, t: &Tokens, width: f32, title: &str, primary: &str, body: impl FnOnce(&mut egui::Ui)) -> Option<bool> {
+        let enter_adds = title == "Add tags";
         let screen = ctx.content_rect();
         let mut result = None;
         egui::Area::new(egui::Id::new("smoke")).fixed_pos(screen.min).order(egui::Order::Middle).show(ctx, |ui| {
@@ -700,7 +723,7 @@ impl LibraryApp {
         ctx.input(|i| {
             if i.key_pressed(egui::Key::Escape) {
                 result = Some(false);
-            } else if i.key_pressed(egui::Key::Enter) && result.is_none() {
+            } else if i.key_pressed(egui::Key::Enter) && result.is_none() && !i.modifiers.any() && !enter_adds {
                 result = Some(true);
             }
         });
@@ -713,7 +736,7 @@ impl LibraryApp {
         let Some(dialog) = &mut self.dialog else { return };
         let (title, primary) = match dialog {
             ClipDialog::Rename(..) => ("Rename clip", "Rename"),
-            ClipDialog::Tags(..) => ("Tags", "Save"),
+            ClipDialog::Tags(..) => ("Add tags", "Save"),
         };
         let result = Self::content_dialog(ctx, t, 420.0, title, primary, |ui| match dialog {
             ClipDialog::Rename(_, name) => {
@@ -721,11 +744,39 @@ impl LibraryApp {
             }
             ClipDialog::Tags(paths, text) => {
                 let what = if paths.len() == 1 { "this clip".to_string() } else { format!("these {} clips", paths.len()) };
-                ui.label(RichText::new(format!("Tags for {what}, separated by commas or spaces.")).color(t.text2));
+                ui.label(RichText::new(format!("Tags help you find {what} later.")).color(t.text2));
                 ui.add_space(8.0);
-                ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY).hint_text("clutch, funny").margin(Margin::symmetric(10, 7)))
-                    .request_focus();
-                let have = crate::library::parse_tags(text);
+                // Current tags as chips with a remove button.
+                let mut have = crate::library::parse_tags(text);
+                let mut drop = None;
+                if !have.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        for (i, tag) in have.iter().enumerate() {
+                            if theme::chip(ui, t, format!("#{tag}  \u{00d7}"), true).on_hover_text("Remove").clicked() {
+                                drop = Some(i);
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                }
+                if let Some(i) = drop {
+                    have.remove(i);
+                    *text = have.join(", ");
+                }
+                let input_id = egui::Id::new("tag-input");
+                let mut input: String = ui.data_mut(|d| d.get_temp::<String>(input_id).unwrap_or_default());
+                let r = ui.add(egui::TextEdit::singleline(&mut input).desired_width(f32::INFINITY).hint_text("Type a tag and press Enter").margin(Margin::symmetric(10, 7)));
+                r.request_focus();
+                if ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Comma)) && !input.trim().is_empty() {
+                    for tag in crate::library::parse_tags(&input) {
+                        if !have.iter().any(|h| h.eq_ignore_ascii_case(&tag)) {
+                            have.push(tag);
+                        }
+                    }
+                    *text = have.join(", ");
+                    input.clear();
+                }
+                ui.data_mut(|d| d.insert_temp(input_id, input));
                 let unused: Vec<String> = known_tags.iter().filter(|k| !have.iter().any(|h| h.eq_ignore_ascii_case(k))).cloned().collect();
                 if !unused.is_empty() {
                     ui.add_space(8.0);
@@ -872,12 +923,12 @@ impl LibraryApp {
             ui.add_space(6.0);
             egui::Grid::new("montage-mix").num_columns(3).spacing([12.0, 8.0]).show(ui, |ui| {
                 ui.label(RichText::new("Game sound").color(t.text));
-                theme::slider(ui, t, &mut m.game_volume, 0..=200, false, 320.0);
+                theme::slider(ui, t, &mut m.game_volume, 0..=200, false, 360.0);
                 ui.label(theme::caption(format!("{}%", m.game_volume)).color(t.text2));
                 ui.end_row();
                 if m.music.is_some() {
                     ui.label(RichText::new("Music").color(t.text));
-                    theme::slider(ui, t, &mut m.music_volume, 0..=100, false, 320.0);
+                    theme::slider(ui, t, &mut m.music_volume, 0..=100, false, 360.0);
                     ui.label(theme::caption(format!("{}%", m.music_volume)).color(t.text2));
                     ui.end_row();
                     ui.label(RichText::new("Fade out at the end").color(t.text));
