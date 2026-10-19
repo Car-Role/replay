@@ -93,6 +93,10 @@ impl LibraryApp {
         }
         list.sort_by(|a, b| b.recording.cmp(&a.recording).then(b.last_seen.cmp(&a.last_seen)).then(a.name.cmp(&b.name)));
 
+        if !list.is_empty() {
+            self.memory_card(ui, t, &list);
+            ui.add_space(4.0);
+        }
         if list.is_empty() {
             ui.add_space(60.0);
             ui.vertical_centered(|ui| {
@@ -209,6 +213,10 @@ impl LibraryApp {
                     if g.last_seen > 0 {
                         parts.push(format!("last played {}", when(g.last_seen)));
                     }
+                    if enabled {
+                        let buf = self.shared.cfg.for_game(&g.exe).buffer_bytes();
+                        parts.push(format!("{} buffer", theme::fmt_bytes(buf)));
+                    }
                     ui.label(theme::caption(parts.join("  ·  ")).color(t.text2));
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -236,6 +244,40 @@ impl LibraryApp {
                     *action = Some(RowAction::Set { exe: g.exe.clone(), name: g.name.clone(), settings });
                 }
             }
+        });
+    }
+
+    /// Memory estimate: now, for the biggest single game, and for every
+    /// game at once. Each game counts with its own settings.
+    fn memory_card(&self, ui: &mut egui::Ui, t: &Tokens, list: &[GameRecord]) {
+        let cfg = &self.shared.cfg;
+        let enabled: Vec<&str> = list.iter().filter(|g| games::is_enabled(&cfg.detection, &g.exe)).map(|g| g.exe.as_str()).collect();
+        let now: Vec<&str> = list.iter().filter(|g| g.recording && self.recorder_running).map(|g| g.exe.as_str()).collect();
+        let biggest = enabled.iter().max_by_key(|e| cfg.for_game(e).buffer_bytes()).copied();
+        theme::card(t).show(ui, |ui| {
+            ui.set_width(ui.available_width().min(980.0 - 32.0));
+            ui.label(theme::body_strong("Memory").color(t.text));
+            ui.add_space(4.0);
+            egui::Grid::new("memory").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
+                let mut row = |label: &str, value: String| {
+                    ui.label(RichText::new(label).color(t.text2));
+                    ui.label(RichText::new(value).color(t.text));
+                    ui.end_row();
+                };
+                row("Now", theme::fmt_bytes(cfg.recording_memory(&now)));
+                if let Some(b) = biggest {
+                    let name = list.iter().find(|g| g.exe == b).map(|g| g.name.as_str()).unwrap_or(b);
+                    row("One game (largest)", format!("{}  ({name})", theme::fmt_bytes(cfg.recording_memory(&[b]))));
+                }
+                if enabled.len() > 1 {
+                    row(&format!("All {} games at once", enabled.len()), theme::fmt_bytes(cfg.recording_memory(&enabled)));
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(
+                theme::caption("Each game keeps its own buffer: quality \u{00d7} replay length. The microphone buffer is shared. Lower a game's quality or length to use less.")
+                    .color(t.text3),
+            );
         });
     }
 
@@ -295,6 +337,10 @@ impl LibraryApp {
             });
             ui.end_row();
         });
+        let mut preview = general.clone();
+        preview.games.insert(exe.to_string(), s.clone());
+        ui.add_space(4.0);
+        ui.label(theme::caption(format!("This game's buffer: about {}", theme::fmt_bytes(preview.sanitized().for_game(exe).buffer_bytes()))).color(t.text2));
         if !current.is_empty() {
             ui.add_space(4.0);
             if theme::subtle(ui, theme::caption("Use the general settings")).clicked() {

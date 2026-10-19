@@ -72,6 +72,12 @@ impl Resolution {
     }
 }
 
+/// Recorder memory apart from the buffers while a game records (GPU
+/// device, encoder, capture), measured with an RTX GPU.
+pub const BASE_MEMORY: u64 = 120_000_000;
+/// Recorder memory with no game running.
+pub const BASE_MEMORY_IDLE: u64 = 3_000_000;
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RateControl {
@@ -455,6 +461,31 @@ impl Config {
         c.sanitized()
     }
 
+    /// Memory one game's replay buffer uses while it records, in bytes, for
+    /// these (already per-game) settings. Buffers hold compressed data, so
+    /// this is the average bitrate times the length (plus the 2 s margin).
+    pub fn buffer_bytes(&self) -> u64 {
+        let secs = u64::from(self.replay_seconds) + 2;
+        let audio = if self.audio.game_audio { self.audio.bitrate_kbps } else { 0 };
+        u64::from(self.video.bitrate_kbps + audio) * 125 * secs
+    }
+
+    /// Memory of the shared microphone buffer, in bytes.
+    pub fn mic_buffer_bytes(&self) -> u64 {
+        if !self.audio.microphone {
+            return 0;
+        }
+        u64::from(self.audio.bitrate_kbps) * 125 * (u64::from(self.max_replay_seconds()) + 2)
+    }
+
+    /// Estimated memory of the recorder while `exes` record at once.
+    pub fn recording_memory(&self, exes: &[&str]) -> u64 {
+        if exes.is_empty() {
+            return BASE_MEMORY_IDLE;
+        }
+        BASE_MEMORY + self.mic_buffer_bytes() + exes.iter().map(|e| self.for_game(e).buffer_bytes()).sum::<u64>()
+    }
+
     /// The longest replay any game keeps (the microphone buffer covers it).
     pub fn max_replay_seconds(&self) -> u32 {
         self.games.values().filter_map(|g| g.replay_seconds).chain([self.replay_seconds]).max().unwrap_or(self.replay_seconds)
@@ -530,6 +561,19 @@ mod tests {
         assert_eq!(c.max_replay_seconds(), 300);
         let back: Config = toml::from_str(&toml::to_string_pretty(&c).unwrap()).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn memory_estimate_uses_each_games_settings() {
+        let mut c = Config::default();
+        // 25 Mbit/s video + 192 kbit/s game audio for 122 s.
+        assert_eq!(c.buffer_bytes(), (25_000 + 192) * 125 * 122);
+        c.games.insert("slow.exe".into(), GameSettings { bitrate_kbps: Some(4_000), ..Default::default() });
+        let slow = c.for_game("slow.exe").buffer_bytes();
+        assert_eq!(slow, (4_000 + 192) * 125 * 122);
+        let both = c.recording_memory(&["slow.exe", "other.exe"]);
+        assert_eq!(both, BASE_MEMORY + c.mic_buffer_bytes() + slow + c.buffer_bytes());
+        assert_eq!(c.recording_memory(&[]), BASE_MEMORY_IDLE);
     }
 
     #[test]

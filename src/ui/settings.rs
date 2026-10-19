@@ -161,8 +161,9 @@ impl SettingsPage {
                 }
             });
         });
-        let mb = (u64::from(d.video.bitrate_kbps + 2 * d.audio.bitrate_kbps) * 1000 / 8) * u64::from(d.replay_seconds + 2) / 1_000_000;
-        theme::setting(ui, t, icons, None, "Quality", &format!("Higher is sharper. About {mb} MB of memory per game being recorded"), |ui| {
+        let one = theme::fmt_bytes(d.recording_memory(&["(any game)"]));
+        let desc = format!("Higher is sharper. While one game records, Replay uses about {one} of memory. See the Games page for every game");
+        theme::setting(ui, t, icons, None, "Quality", &desc, |ui| {
             ui.label(RichText::new(theme::fmt_mbps(d.video.bitrate_kbps)).color(t.text2));
             ui.spacing_mut().slider_width = 220.0;
             let mut kbps = d.video.bitrate_kbps;

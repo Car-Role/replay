@@ -516,6 +516,11 @@ pub fn fmt_mbps(kbps: u32) -> String {
     if m < 10.0 && kbps % 1000 != 0 { format!("{m:.1} Mbit/s") } else { format!("{m:.0} Mbit/s") }
 }
 
+/// A memory size for people: "860 MB", "1.4 GB".
+pub fn fmt_bytes(b: u64) -> String {
+    if b >= 1_000_000_000 { format!("{:.1} GB", b as f64 / 1e9) } else { format!("{} MB", (b + 500_000) / 1_000_000) }
+}
+
 pub fn fmt_short(s: f64) -> String {
     let s = s.max(0.0).round() as u64;
     format!("{}:{:02}", s / 60, s % 60)
