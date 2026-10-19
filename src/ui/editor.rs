@@ -1171,11 +1171,10 @@ impl Editor {
         let soft = !copy && spec.bitrate_kbps < 800;
         if soft && !self.warned {
             let untrimmed = self.in_point <= 0.01 && self.out_point >= self.duration - 0.01;
-            if untrimmed {
-                self.fold_trim = true;
-            } else {
-                self.reveal_save = true;
-            }
+            // Fold Trim when nothing is trimmed, and scroll if Save as still
+            // does not fit (short windows).
+            self.fold_trim = untrimmed;
+            self.reveal_save = true;
             ui.ctx().request_repaint();
         }
         self.warned = soft;

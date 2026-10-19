@@ -27,11 +27,11 @@ use theme::{Tokens, icon};
 
 /// `replay --snapshot <folder>`: renders every page off-screen to PNG files,
 /// without touching the mouse or keyboard.
-pub fn snapshot(dir: PathBuf) {
+pub fn snapshot(dir: PathBuf, scale: f32) {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Replay snapshot")
-            .with_inner_size([1320.0, 840.0])
+            .with_inner_size([1320.0 * scale, 840.0 * scale])
             .with_position([-30_000.0, -30_000.0])
             .with_active(false)
             .with_taskbar(false),
@@ -41,6 +41,7 @@ pub fn snapshot(dir: PathBuf) {
         "Replay snapshot",
         options,
         Box::new(move |cc| {
+            cc.egui_ctx.set_zoom_factor(scale.clamp(0.5, 3.0));
             let mut app = LibraryApp::new(cc, None, "clips");
             app.snapshot = Some(snapshot::Snapshot::new(dir));
             Ok(Box::new(app))

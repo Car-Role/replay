@@ -1,0 +1,20 @@
+{
+  "name": "replay-video",
+  "private": true,
+  "description": "The showcase video for the website and the demo clips used for its screenshots.",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "showcase": "remotion render src/index.ts Showcase out/replay-showcase.mp4 --crf 24",
+    "poster": "remotion still src/index.ts Showcase out/poster.png --frame 450"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.533",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.533"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "typescript": "5.6.3"
+  }
+}

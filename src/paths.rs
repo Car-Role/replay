@@ -76,12 +76,18 @@ pub fn videos_dir() -> PathBuf {
     imp::videos().unwrap_or_else(|| home().join(if cfg!(target_os = "macos") { "Movies" } else { "Videos" }))
 }
 
+/// `REPLAY_HOME` moves settings and data to `<it>/config` and `<it>/data`,
+/// for demos and tests that must not touch the real library.
+fn override_dir(sub: &str) -> Option<PathBuf> {
+    std::env::var_os("REPLAY_HOME").filter(|v| !v.is_empty()).map(|h| PathBuf::from(h).join(sub))
+}
+
 /// Settings folder.
 pub fn config_dir() -> PathBuf {
-    imp::config().unwrap_or_else(|| home().join(".replay"))
+    override_dir("config").or_else(imp::config).unwrap_or_else(|| home().join(".replay"))
 }
 
 /// Logs, caches and downloaded updates.
 pub fn data_dir() -> PathBuf {
-    imp::data().unwrap_or_else(|| home().join(".replay"))
+    override_dir("data").or_else(imp::data).unwrap_or_else(|| home().join(".replay"))
 }

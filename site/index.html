@@ -3,258 +3,333 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Replay: instant replay for Windows games</title>
-<meta name="description" content="Replay keeps the last minutes of every game in memory using your GPU's video encoder. Press Alt+F10 to save the clip. Free and open source.">
-<link rel="icon" type="image/png" href="favicon.png">
+<title>Replay · Instant replay for Windows games</title>
+<meta name="description" content="Replay keeps the last minutes of every game in memory, encoded by your GPU. Press Alt+F10 to save the clip. Free and open source.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#141414">
 <meta property="og:title" content="Replay">
-<meta property="og:description" content="Instant replay for Windows games, with almost no performance cost.">
-<meta property="og:image" content="icon.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@600;700&family=Figtree:wght@400;500;600&display=swap">
+<meta property="og:description" content="Instant replay for Windows games. Save the play after it happens.">
+<meta property="og:image" content="https://car-role.github.io/replay/media/poster.jpg">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.png">
 <style>
-/* Layout: a single column. Hero with the download, an illustrated trim bar,
-   then features, steps, and notes. Brand colors come from the app icon. */
 :root {
-  --night-1: #2a3042;
-  --night-2: #141824;
-  --sunset-1: #ff6a3d;
-  --sunset-2: #ff2d87;
-  --bg: #0f121a;
-  --surface: #171b26;
-  --surface-2: #1e2331;
-  --line: #2a3142;
-  --fg: #eef0f5;
-  --muted: #a3abbd;
-  --accent: #ff6b81;
-  --display: "Unbounded", "Segoe UI", system-ui, sans-serif;
-  --body: "Figtree", "Segoe UI", system-ui, sans-serif;
-  color-scheme: dark;
+  --base: #141414;
+  --layer: #1c1c1c;
+  --card: #222;
+  --edge: rgba(255, 255, 255, 0.09);
+  --text: #fff;
+  --text2: #c8c8c8;
+  --text3: #9e9e9e;
+  --accent: #f2649a;
+  --accent-hover: #f57daa;
+  --on-accent: #1a0b12;
+  --radius: 14px;
+  --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --display: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; }
+html { scroll-behavior: smooth; }
 body {
-  background: var(--bg);
-  color: var(--fg);
-  font: 16px/1.6 var(--body);
+  margin: 0;
+  background: var(--base);
+  color: var(--text);
+  font: 16px/1.6 var(--font);
   -webkit-font-smoothing: antialiased;
 }
-a { color: var(--accent); }
-a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
-.wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
-header .wrap { display: flex; align-items: center; justify-content: space-between; height: 72px; }
-.brand { display: flex; align-items: center; gap: 10px; color: var(--fg); text-decoration: none; font-weight: 600; font-size: 18px; }
-.brand img { width: 32px; height: 32px; }
-nav a { color: var(--muted); text-decoration: none; margin-left: 20px; font-weight: 500; }
-nav a:hover { color: var(--fg); }
+a { color: inherit; }
+.wrap { width: min(1120px, 100% - 32px); margin-inline: auto; }
 
-.hero { padding: 72px 0 40px; text-align: center; }
-h1 {
-  font-family: var(--display);
-  font-size: clamp(36px, 6vw, 64px);
-  line-height: 1.05;
-  letter-spacing: -0.02em;
-  margin: 0 auto 20px;
-  max-width: 14ch;
-  text-wrap: balance;
+header {
+  position: sticky; top: 0; z-index: 10;
+  background: rgba(20, 20, 20, 0.78);
+  backdrop-filter: saturate(160%) blur(14px);
+  border-bottom: 1px solid var(--edge);
 }
-h1 em {
-  font-style: normal;
-  background: linear-gradient(90deg, var(--sunset-1), var(--sunset-2));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-.lede { color: var(--muted); font-size: 19px; max-width: 58ch; margin: 0 auto 32px; }
-.cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+header .wrap { display: flex; align-items: center; gap: 24px; height: 60px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; text-decoration: none; font-size: 17px; }
+.brand img { width: 26px; height: 26px; }
+nav { margin-left: auto; display: flex; align-items: center; gap: 22px; font-size: 15px; color: var(--text2); }
+nav a { text-decoration: none; }
+nav a:hover { color: var(--text); }
+@media (max-width: 560px) { nav .opt { display: none; } }
+
 .btn {
   display: inline-flex; align-items: center; gap: 10px;
-  padding: 14px 22px; border-radius: 10px; font-weight: 600; text-decoration: none;
-  border: 1px solid var(--line); color: var(--fg); background: var(--surface);
-  transition: transform .12s, background .12s;
+  height: 44px; padding: 0 20px; border-radius: 10px;
+  font: 600 15px var(--font); text-decoration: none;
+  background: rgba(255, 255, 255, 0.06); border: 1px solid var(--edge); color: var(--text);
+  transition: background 0.12s, transform 0.12s;
 }
-.btn:hover { background: var(--surface-2); }
-.btn.primary {
-  border: none; color: #fff;
-  background: linear-gradient(135deg, var(--sunset-1), var(--sunset-2));
-  box-shadow: 0 10px 30px -10px rgba(255, 45, 135, .6);
-}
-.btn.primary:hover { transform: translateY(-1px); }
-.btn svg { width: 20px; height: 20px; }
-.meta { margin-top: 16px; color: var(--muted); font-size: 14px; }
-.meta .sep { margin: 0 8px; opacity: .5; }
-.os-note { margin-top: 10px; font-size: 14px; color: #fcd77f; }
+.btn:hover { background: rgba(255, 255, 255, 0.1); }
+.btn.primary { background: var(--accent); border-color: transparent; color: var(--on-accent); }
+.btn.primary:hover { background: var(--accent-hover); }
+.btn.small { height: 34px; padding: 0 14px; font-size: 14px; }
+.btn svg { width: 18px; height: 18px; }
+.btn:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
 
-/* Illustration: the editor's trim bar. */
-.demo {
-  margin: 56px auto 0; max-width: 860px; padding: 20px;
-  background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
+.hero { text-align: center; padding: 88px 0 40px; position: relative; }
+.hero::before {
+  content: ""; position: absolute; inset: -60px 0 auto; height: 520px; z-index: -1;
+  background: radial-gradient(600px 300px at 50% 20%, rgba(242, 100, 154, 0.18), transparent 70%);
 }
-.screen {
-  aspect-ratio: 16 / 7; border-radius: 10px; position: relative; overflow: hidden;
-  background:
-    radial-gradient(ellipse at 30% 60%, rgba(255,106,61,.35), transparent 55%),
-    radial-gradient(ellipse at 75% 35%, rgba(255,45,135,.30), transparent 50%),
-    linear-gradient(160deg, var(--night-1), var(--night-2));
+.pill {
+  display: inline-block; padding: 6px 14px; border-radius: 999px;
+  border: 1px solid var(--edge); background: rgba(255, 255, 255, 0.04);
+  color: var(--text2); font-size: 14px;
 }
-.screen .play {
-  position: absolute; inset: 0; margin: auto; width: 64px; height: 64px; border-radius: 50%;
-  background: rgba(0,0,0,.45); display: grid; place-items: center;
+h1 {
+  font: 600 clamp(40px, 7vw, 76px)/1.04 var(--display);
+  letter-spacing: -0.03em; margin: 22px auto 18px; max-width: 14ch;
 }
-.screen .play::after {
-  content: ""; width: 0; height: 0; margin-left: 6px;
-  border-left: 18px solid #fff; border-top: 12px solid transparent; border-bottom: 12px solid transparent;
-}
-.strip { position: relative; margin-top: 18px; height: 54px; display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; border-radius: 6px; overflow: hidden; }
-.strip span { background: linear-gradient(160deg, #3a3348, #222838); }
-.strip span:nth-child(3n) { background: linear-gradient(160deg, #50384a, #2a2738); }
-.strip span:nth-child(4n+1) { background: linear-gradient(160deg, #3d4058, #1c2130); }
-.dim { position: absolute; top: 0; bottom: 0; background: rgba(0,0,0,.6); }
-.dim.l { left: 0; width: 22%; }
-.dim.r { right: 0; width: 18%; }
-.sel { position: absolute; top: -3px; bottom: -3px; left: 22%; right: 18%; border: 3px solid var(--accent); border-radius: 4px; }
-.sel::before, .sel::after { content: ""; position: absolute; top: -3px; bottom: -3px; width: 12px; background: var(--accent); }
-.sel::before { left: -12px; border-radius: 4px 0 0 4px; }
-.sel::after { right: -12px; border-radius: 0 4px 4px 0; }
-.head { position: absolute; top: -8px; bottom: -4px; left: 46%; width: 2px; background: #fff; }
-.head::before { content: ""; position: absolute; top: -6px; left: -4px; width: 10px; height: 10px; border-radius: 50%; background: #fff; }
-.bubble { position: absolute; top: -40px; left: 46%; transform: translateX(-50%); background: #2c2c2c; border: 1px solid #444; padding: 2px 8px; border-radius: 4px; font-size: 12px; white-space: nowrap; }
-.caption { margin: 14px 0 0; color: var(--muted); font-size: 14px; text-align: center; }
+h1 em { font-style: normal; color: var(--accent); }
+.lede { color: var(--text2); font-size: clamp(17px, 2.2vw, 20px); max-width: 40em; margin: 0 auto 30px; }
+.cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.meta { color: var(--text3); font-size: 14px; margin-top: 16px; }
+.os-note { color: var(--text2); font-size: 14px; }
 
-section { padding: 72px 0 0; }
-h2 { font-family: var(--display); font-size: clamp(24px, 3.4vw, 34px); margin: 0 0 10px; letter-spacing: -0.01em; text-wrap: balance; }
-.sub { color: var(--muted); margin: 0 0 32px; max-width: 60ch; }
-.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
-.card h3 { margin: 0 0 6px; font-size: 17px; }
-.card p { margin: 0; color: var(--muted); font-size: 15px; }
-.card .n { font-family: var(--display); font-size: 13px; color: var(--accent); letter-spacing: .06em; }
-.stat { font-family: var(--display); font-size: 26px; margin: 4px 0 2px; }
-.steps { counter-reset: s; }
-kbd { font: 600 13px var(--body); background: var(--surface-2); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 1px 7px; }
-.notes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-code, pre { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
-pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 10px 0 0; }
-footer { margin-top: 96px; border-top: 1px solid var(--line); padding: 28px 0 48px; color: var(--muted); font-size: 14px; }
-footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.video {
+  position: relative; margin: 48px auto 0; border-radius: var(--radius); overflow: hidden;
+  border: 1px solid var(--edge); background: #000; aspect-ratio: 16 / 9;
+  box-shadow: 0 40px 120px rgba(0, 0, 0, 0.6), 0 0 80px rgba(242, 100, 154, 0.08);
+}
+.video video { display: block; width: 100%; height: 100%; }
+.sound {
+  position: absolute; right: 16px; bottom: 16px;
+  display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 14px;
+  border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(20, 20, 20, 0.7); backdrop-filter: blur(8px);
+  color: var(--text); font: 600 14px var(--font); cursor: pointer;
+}
+.sound svg { width: 18px; height: 18px; }
 
-@media (max-width: 860px) {
-  .grid { grid-template-columns: 1fr 1fr; }
-  .notes { grid-template-columns: 1fr; }
+section { padding: 96px 0 0; }
+h2 { font: 600 clamp(28px, 4vw, 40px)/1.15 var(--display); letter-spacing: -0.02em; margin: 0 0 12px; }
+.sub { color: var(--text2); margin: 0 0 36px; max-width: 40em; }
+
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 900px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+.card {
+  background: var(--card); border: 1px solid var(--edge); border-radius: var(--radius);
+  padding: 24px;
 }
-@media (max-width: 560px) {
-  .grid { grid-template-columns: 1fr; }
-  nav a:not(.gh) { display: none; }
-  .hero { padding-top: 40px; }
+.card h3 { margin: 14px 0 6px; font-size: 18px; font-weight: 600; }
+.card p { margin: 0; color: var(--text2); font-size: 15px; }
+.icon {
+  width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center;
+  background: rgba(242, 100, 154, 0.12); color: var(--accent);
 }
-@media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
+.icon svg { width: 22px; height: 22px; }
+
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--edge); border-radius: var(--radius); background: var(--layer); }
+.stats div { padding: 28px; }
+.stats div + div { border-left: 1px solid var(--edge); }
+.stats b { display: block; font: 600 40px/1.1 var(--display); letter-spacing: -0.02em; }
+.stats span { color: var(--text2); font-size: 15px; }
+@media (max-width: 700px) {
+  .stats { grid-template-columns: 1fr; }
+  .stats div + div { border-left: 0; border-top: 1px solid var(--edge); }
+}
+
+kbd {
+  display: inline-block; min-width: 1.6em; padding: 1px 7px; border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2); border-bottom-width: 2px;
+  background: rgba(255, 255, 255, 0.06); font: 600 0.85em var(--font); text-align: center;
+}
+.keys { display: grid; gap: 0; border: 1px solid var(--edge); border-radius: var(--radius); overflow: hidden; }
+.keys div { display: flex; justify-content: space-between; gap: 16px; padding: 16px 22px; background: var(--layer); }
+.keys div + div { border-top: 1px solid var(--edge); }
+.keys span { color: var(--text2); }
+
+details { border-top: 1px solid var(--edge); padding: 18px 2px; }
+details:last-child { border-bottom: 1px solid var(--edge); }
+summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; justify-content: space-between; }
+summary::after { content: "+"; color: var(--text3); font-weight: 400; font-size: 22px; line-height: 1; }
+details[open] summary::after { content: "−"; }
+details p { color: var(--text2); margin: 10px 0 0; }
+pre { overflow-x: auto; background: #000; border: 1px solid var(--edge); border-radius: 10px; padding: 12px 14px; font-size: 13px; color: var(--text2); }
+code { font-size: 0.92em; }
+
+.final { text-align: center; padding: 110px 0 100px; }
+.final h2 { margin-bottom: 26px; }
+footer { border-top: 1px solid var(--edge); color: var(--text3); font-size: 14px; }
+footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 26px 0; }
+footer a { text-decoration: none; color: var(--text2); }
+footer a:hover { color: var(--text); }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .btn { transition: none; } }
 </style>
 </head>
 <body>
 <header>
   <div class="wrap">
-    <a class="brand" href="#"><img src="icon.png" alt="" width="32" height="32">Replay</a>
+    <a class="brand" href="#top"><img src="icon.png" alt="" width="26" height="26">Replay</a>
     <nav>
-      <a href="#features">Features</a>
-      <a href="#faq">Notes</a>
-      <a class="gh" href="https://github.com/Car-Role/replay">GitHub</a>
+      <a class="opt" href="#features">Features</a>
+      <a class="opt" href="#notes">Notes</a>
+      <a href="https://github.com/Car-Role/replay">GitHub</a>
+      <a class="btn primary small" href="https://github.com/Car-Role/replay/releases/latest/download/Replay-Setup-windows-x64.exe">Download</a>
     </nav>
   </div>
 </header>
 
-<main>
+<main id="top">
   <div class="wrap hero">
+    <span class="pill">Free and open source · Windows 10 and 11</span>
     <h1>Save the play <em>after</em> it happens.</h1>
-    <p class="lede">Replay keeps the last minutes of every game in memory, encoded by your graphics card. Press <kbd>Alt</kbd>+<kbd>F10</kbd> and the clip is saved. Trim it, mix the audio and share it in seconds.</p>
+    <p class="lede">Replay keeps the last minutes of every game in memory, encoded by your graphics card. Press <kbd>Alt</kbd>+<kbd>F10</kbd> and it is saved.</p>
     <div class="cta">
-      <a class="btn primary" id="dl" href="https://github.com/Car-Role/replay/releases/latest/download/Replay-Setup-windows-x64.exe">
+      <a class="btn primary" href="https://github.com/Car-Role/replay/releases/latest/download/Replay-Setup-windows-x64.exe">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.5 4.4v7.1H3zm8.5-1.3L21 2.8v8.7h-9.5zM3 12.5h7.5v7.1L3 18.5zm8.5 0H21v8.7l-9.5-1.4z"/></svg>
         Download for Windows
       </a>
       <a class="btn" href="https://github.com/Car-Role/replay/releases/latest/download/replay-windows-x64.zip">Portable .zip</a>
     </div>
-    <p class="meta"><span id="ver">Latest version</span><span class="sep">·</span>Windows 10 (2004) or 11<span class="sep">·</span>Free and open source</p>
+    <p class="meta" id="ver">Latest version · No account needed</p>
     <p class="os-note" id="osnote" hidden>Replay is for Windows for now. macOS and Linux versions are in progress.</p>
 
-    <div class="demo" aria-hidden="true">
-      <div class="screen"><div class="play"></div></div>
-      <div class="strip">
-        <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
-        <div class="dim l"></div><div class="dim r"></div>
-        <div class="sel"></div>
-        <div class="head"></div>
-        <div class="bubble">0:14.20</div>
-      </div>
+    <div class="video">
+      <video id="film" src="media/replay-showcase.mp4" poster="media/poster.jpg" autoplay muted loop playsinline preload="metadata" aria-label="A 32-second tour of Replay: saving a clip, the library, the editor, vertical and Discord exports, and per-game settings."></video>
+      <button class="sound" id="sound" type="button" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path id="wave" d="M16 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12" opacity=".35"/></svg>
+        <span>Sound on</span>
+      </button>
     </div>
-    <p class="caption">Drag the handles and the preview shows that exact frame. Saving copies the video, so it takes seconds and loses no quality.</p>
   </div>
 
   <section id="features">
     <div class="wrap">
-      <h2>Built to stay out of your frame rate</h2>
-      <p class="sub">Frames go from the game to your GPU's video encoder without passing through the CPU. When no game runs, Replay sleeps.</p>
+      <h2>Everything after the moment</h2>
+      <p class="sub">Capture, cut and share without leaving the game for long.</p>
       <div class="grid">
-        <div class="card"><span class="n">IDLE</span><p class="stat">0 ms</p><p>CPU time over 30 seconds with no game running, and about 3 MB of memory.</p></div>
-        <div class="card"><span class="n">RECORDING</span><p class="stat">~5%</p><p>Of one CPU core while recording 1080p60 with game audio and mic.</p></div>
-        <div class="card"><span class="n">SAVING</span><p class="stat">&lt; 0.5 s</p><p>To write a two-minute clip. The buffer is never copied.</p></div>
-        <div class="card"><h3>Every game, found by itself</h3><p>Steam, Epic, Battle.net, Riot, GOG, EA, Ubisoft and Jagex launchers, game folders, the Windows Game Bar list and fullscreen 3D apps. Turn any game off on the Games page.</p></div>
-        <div class="card"><h3>Several games at once</h3><p>Each game has its own buffer. One hotkey saves the game in front, another saves all of them.</p></div>
-        <div class="card"><h3>Your voice on its own track</h3><p>Only the game's sound (not Discord or music), your mic, and a mix of both for players that play one track.</p></div>
-        <div class="card"><h3>AV1, HEVC or H.264</h3><p>NVENC on NVIDIA cards, and the hardware encoders on AMD and Intel. Up to 240 fps.</p></div>
-        <div class="card"><h3>Trim, join and remix</h3><p>A filmstrip trim bar that scrubs the preview, exact-frame cuts, joins, and separate game and mic volume.</p></div>
-        <div class="card"><h3>Ready for Discord and Shorts</h3><p>Export a copy that fits 10, 50 or 500 MB, or a vertical 9:16 crop for phones. Make montages with music.</p></div>
-        <div class="card"><h3>Full sessions too</h3><p>Press <kbd>Alt</kbd>+<kbd>F9</kbd> to record a whole session. It goes straight to disk, so hours cost no extra memory.</p></div>
-        <div class="card"><h3>Webcam and HDR</h3><p>Put your camera in a corner of every clip. HDR games are converted so clips never look washed out.</p></div>
-        <div class="card"><h3>Share in one click</h3><p>Copy the file and paste it into Discord, or upload to Streamable, Catbox, Litterbox or your own ShareX uploader.</p></div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg></div>
+          <h3>Always ready</h3>
+          <p>The last minutes stay in memory. One key saves them, another records a whole session.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="3"/><path d="M6 12h4M8 10v4"/><circle cx="16" cy="11" r="1"/><circle cx="18" cy="13" r="1"/></svg></div>
+          <h3>Finds your games</h3>
+          <p>Launchers, game folders and fullscreen apps. Several games at once, each with its own quality.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg></div>
+          <h3>Edit in seconds</h3>
+          <p>A filmstrip trim bar, exact-frame cuts, separate game and mic volume, and montages with music.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7"/><path d="m16 6-4-4-4 4M12 2v13"/></svg></div>
+          <h3>Ready to share</h3>
+          <p>Copies sized for Discord, vertical 9:16 for Shorts, or an upload link in one click.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg></div>
+          <h3>Light on your PC</h3>
+          <p>Frames go straight to your GPU's encoder (AV1, HEVC or H.264). When no game runs, Replay sleeps.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+          <h3>Yours</h3>
+          <p>No account and no tracking. Updates are signed, and the code is open under MIT.</p>
+        </div>
       </div>
     </div>
   </section>
 
   <section>
     <div class="wrap">
-      <h2>Three steps</h2>
-      <p class="sub">No account and no setup.</p>
-      <div class="grid steps">
-        <div class="card"><span class="n">01</span><h3>Install</h3><p>Run the installer. It needs no admin rights and puts Replay in the notification area.</p></div>
-        <div class="card"><span class="n">02</span><h3>Play</h3><p>Start any game. The icon turns red when Replay is recording it.</p></div>
-        <div class="card"><span class="n">03</span><h3>Press <kbd>Alt</kbd>+<kbd>F10</kbd></h3><p>The last two minutes are saved to <code>Videos\Replay</code>. Click the notice to trim and share.</p></div>
+      <div class="stats">
+        <div><b>0 ms</b><span>CPU time with no game running</span></div>
+        <div><b>~5%</b><span>of one core while recording 1080p60</span></div>
+        <div><b>&lt; 0.5 s</b><span>to save a two-minute clip</span></div>
       </div>
     </div>
   </section>
 
-  <section id="faq">
+  <section>
     <div class="wrap">
-      <h2>Good to know</h2>
-      <div class="notes">
-        <div class="card"><h3>Windows SmartScreen</h3><p>Replay is not code-signed yet, so Windows may warn the first time. Choose <strong>More info</strong>, then <strong>Run anyway</strong>.</p></div>
-        <div class="card"><h3>The NVIDIA app uses Alt+F10 too</h3><p>Turn off Instant Replay in the NVIDIA app, or pick other keys in Replay's settings. Running both records everything twice.</p></div>
-        <div class="card"><h3>Updates</h3><p>Replay checks GitHub once a day, downloads new versions in the background and installs them when you choose. Each update must carry a valid signature from the release key, or it is not installed.</p></div>
-        <div class="card"><h3>Privacy</h3><p>Replay sends no data about you. It contacts GitHub only to check for updates (you can turn this off), and an upload service only when you upload.</p></div>
-        <div class="card"><h3>Check a download</h3><p>Every release has <code>SHA256SUMS.txt</code>, signed with the key in the repository:</p>
-<pre>minisign -Vm SHA256SUMS.txt -P RWScCVL9ehOESIIXybJ0DWwRO1Y3O43uZSFI37/rYhyCrHMmNFmAjjNG</pre></div>
-        <div class="card"><h3>macOS and Linux</h3><p>In progress. The code is shared, and those versions will come in a later release.</p></div>
+      <h2>Four keys to know</h2>
+      <p class="sub">Change any of them in Settings.</p>
+      <div class="keys">
+        <div><span>Save a replay of the game in front</span><span><kbd>Alt</kbd> <kbd>F10</kbd></span></div>
+        <div><span>Save every game</span><span><kbd>Alt</kbd> <kbd>Shift</kbd> <kbd>F10</kbd></span></div>
+        <div><span>Start or stop a session recording</span><span><kbd>Alt</kbd> <kbd>F9</kbd></span></div>
+        <div><span>Mark the app in front as a game</span><span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>F10</kbd></span></div>
       </div>
     </div>
   </section>
+
+  <section id="notes">
+    <div class="wrap">
+      <h2>Good to know</h2>
+      <details>
+        <summary>Windows SmartScreen warns on first start</summary>
+        <p>Replay is not code-signed yet. Choose <strong>More info</strong>, then <strong>Run anyway</strong>.</p>
+      </details>
+      <details>
+        <summary>The NVIDIA app also uses Alt+F10</summary>
+        <p>Turn off Instant Replay in the NVIDIA app, or pick other keys in Replay. Running both records everything twice.</p>
+      </details>
+      <details>
+        <summary>Updates and privacy</summary>
+        <p>Replay checks GitHub once a day and installs updates only with a valid signature. It sends no data about you, and contacts an upload service only when you upload.</p>
+      </details>
+      <details>
+        <summary>Check a download</summary>
+        <p>Every release has <code>SHA256SUMS.txt</code>, signed with the key in the repository:</p>
+        <pre>minisign -Vm SHA256SUMS.txt -P RWScCVL9ehOESIIXybJ0DWwRO1Y3O43uZSFI37/rYhyCrHMmNFmAjjNG</pre>
+      </details>
+      <details>
+        <summary>System requirements</summary>
+        <p>Windows 10 (2004) or 11 and a GPU with a hardware video encoder. AV1 needs an NVIDIA RTX 40, AMD RX 7000 or Intel Arc GPU, or newer. macOS and Linux versions are in progress.</p>
+      </details>
+    </div>
+  </section>
+
+  <div class="wrap final">
+    <h2>Never miss the play again.</h2>
+    <a class="btn primary" href="https://github.com/Car-Role/replay/releases/latest/download/Replay-Setup-windows-x64.exe">Download for Windows</a>
+  </div>
 </main>
 
 <footer>
   <div class="wrap">
     <span>Replay is free software under the MIT license.</span>
-    <span><a href="https://github.com/Car-Role/replay">Source code</a> · <a href="https://github.com/Car-Role/replay/releases">All releases</a> · <a href="https://github.com/Car-Role/replay/issues">Report a problem</a></span>
+    <span><a href="https://github.com/Car-Role/replay">Source</a> · <a href="https://github.com/Car-Role/replay/releases">Releases</a> · <a href="https://github.com/Car-Role/replay/issues">Report a problem</a></span>
   </div>
 </footer>
 
 <script>
 (() => {
-  const ua = navigator.userAgent;
-  if (!/Windows/i.test(ua)) document.getElementById('osnote').hidden = false;
+  if (!/Windows/i.test(navigator.userAgent)) document.getElementById('osnote').hidden = false;
+
+  const film = document.getElementById('film');
+  const sound = document.getElementById('sound');
+  const wave = document.getElementById('wave');
+  // Reduced motion: no autoplay; the poster shows with controls instead.
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    film.removeAttribute('autoplay');
+    film.pause();
+    film.controls = true;
+  }
+  sound.addEventListener('click', () => {
+    film.muted = !film.muted;
+    if (!film.muted) {
+      film.currentTime = 0;
+      film.play().catch(() => {});
+    }
+    sound.setAttribute('aria-pressed', String(!film.muted));
+    sound.querySelector('span').textContent = film.muted ? 'Sound on' : 'Sound off';
+    wave.setAttribute('opacity', film.muted ? '.35' : '1');
+  });
+
   fetch('https://api.github.com/repos/Car-Role/replay/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
     .then(r => (r.ok ? r.json() : null))
     .then(rel => {
       if (!rel || !rel.tag_name) return;
       const date = rel.published_at ? new Date(rel.published_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '';
-      document.getElementById('ver').textContent = `Version ${rel.tag_name.replace(/^v/, '')}${date ? ' · ' + date : ''}`;
+      document.getElementById('ver').textContent = `Version ${rel.tag_name.replace(/^v/, '')}${date ? ' · ' + date : ''} · No account needed`;
     })
     .catch(() => {});
 })();

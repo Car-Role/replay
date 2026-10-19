@@ -52,7 +52,9 @@ fn main() {
             logger::init("probe", false);
             sys::init_ui();
             let dir = args.get(1).map(std::path::PathBuf::from).unwrap_or_else(|| paths::data_dir().join("snapshots"));
-            ui::snapshot(dir);
+            // `--scale 1.5` renders the same layout at 1.5x pixels (sharper images).
+            let scale = args.iter().position(|a| a == "--scale").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(1.0);
+            ui::snapshot(dir, scale);
         }
         "--library" | "--settings" | "--games" => {
             logger::init("library", cfg!(debug_assertions));
