@@ -6,7 +6,7 @@ use eframe::egui::{self, CornerRadius, Margin, RichText, Stroke};
 
 use super::Shared;
 use super::theme::{self, Tokens, icon};
-use crate::config::{Codec, Config, OverlayCorner, RateControl, Resolution};
+use crate::config::{Codec, Config, OverlayCorner, RateControl, Resolution, UploadTarget};
 
 /// What the Updates card shows.
 #[derive(Clone)]
@@ -25,6 +25,9 @@ pub struct SettingsPage {
     include_text: String,
     exclude_text: String,
     password: String,
+    /// Custom uploader headers as typed; saved encrypted.
+    custom_headers: String,
+    custom_fields: String,
     mics: Vec<(String, String)>,
     encoders: Vec<(Codec, bool)>,
     /// Clips in the folder and their total size, for the Storage section.
@@ -46,6 +49,8 @@ impl SettingsPage {
             include_text: cfg.detection.include.join("\n"),
             exclude_text: cfg.detection.exclude.join("\n"),
             password: String::new(),
+            custom_headers: crate::sys::secret::unprotect(&cfg.share.custom.headers_protected).unwrap_or_default(),
+            custom_fields: cfg.share.custom.fields.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("\n"),
             mics: crate::sys::list_microphones(),
             encoders: crate::sys::available_codecs(),
             usage: folder_usage(&cfg.output_dir),
@@ -338,18 +343,84 @@ impl SettingsPage {
         });
     }
 
-    fn sharing(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &Shared) {
+    fn sharing(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared) {
         let d = &mut self.draft;
         theme::section(ui, t, "Sharing");
-        theme::setting(ui, t, icons, Some(icon::SHARE), "Streamable email", "Used to upload clips to your Streamable account", |ui| {
-            ui.add(egui::TextEdit::singleline(&mut d.share.streamable_email).desired_width(260.0).margin(Margin::symmetric(10, 7)));
+        theme::setting(ui, t, icons, Some(icon::SHARE), "Upload to", d.share.target.describe(), |ui| {
+            egui::ComboBox::from_id_salt("target").width(COMBO_W).selected_text(d.share.target.label()).show_ui(ui, |ui| {
+                for u in UploadTarget::ALL {
+                    ui.selectable_value(&mut d.share.target, u, u.label());
+                }
+            });
         });
-        let saved = !shared.cfg.share.streamable_password_protected.is_empty();
-        let hint = if saved { "Saved. Type to replace it" } else { "" };
-        theme::setting(ui, t, icons, None, "Streamable password", "Stored encrypted for your user account, and sent only to Streamable", |ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.password).password(true).hint_text(hint).desired_width(260.0).margin(Margin::symmetric(10, 7)));
-        });
-        theme::setting(ui, t, icons, Some(icon::UPLOAD), "Upload every replay", "Send each saved clip to Streamable automatically", |ui| {
+        match d.share.target {
+            UploadTarget::Streamable => {
+                theme::setting(ui, t, icons, None, "Streamable email", "Used to upload clips to your Streamable account", |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut d.share.streamable_email).desired_width(260.0).margin(Margin::symmetric(10, 7)));
+                });
+                let saved = !shared.cfg.share.streamable_password_protected.is_empty();
+                let hint = if saved { "Saved. Type to replace it" } else { "" };
+                theme::setting(ui, t, icons, None, "Streamable password", "Stored encrypted for your user account, and sent only to Streamable", |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.password).password(true).hint_text(hint).desired_width(260.0).margin(Margin::symmetric(10, 7)));
+                });
+            }
+            UploadTarget::Catbox => {}
+            UploadTarget::Litterbox => {
+                theme::setting(ui, t, icons, None, "Keep files for", "Litterbox deletes them after this time", |ui| {
+                    let label = |h: u32| if h == 1 { "1 hour".to_string() } else { format!("{h} hours") };
+                    egui::ComboBox::from_id_salt("litter").width(COMBO_W).selected_text(label(d.share.litterbox_hours)).show_ui(ui, |ui| {
+                        for h in [1, 12, 24, 72] {
+                            ui.selectable_value(&mut d.share.litterbox_hours, h, label(h));
+                        }
+                    });
+                });
+            }
+            UploadTarget::Custom => {
+                let mut import = false;
+                theme::setting(ui, t, icons, None, "ShareX uploader", "Import a .sxcu file, or fill in the fields below", |ui| {
+                    if theme::button(ui, "Import .sxcu...", true).clicked() {
+                        import = true;
+                    }
+                });
+                if import
+                    && let Some(p) = crate::sys::shell::pick_file("ShareX uploader", "*.sxcu;*.json")
+                {
+                    match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| crate::share::import_sxcu(&t)) {
+                        Ok((up, headers)) => {
+                            self.custom_fields = up.fields.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("\n");
+                            d.share.custom = up;
+                            self.custom_headers = headers;
+                            shared.toast("Uploader imported. Save to use it.", false);
+                        }
+                        Err(e) => shared.toast(e, true),
+                    }
+                }
+                let c = &mut d.share.custom;
+                theme::setting_frame(t).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    egui::Grid::new("custom-up").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+                        let row = |ui: &mut egui::Ui, label: &str, v: &mut String, hint: &str| {
+                            ui.label(RichText::new(label).color(t.text));
+                            ui.add(egui::TextEdit::singleline(v).hint_text(hint).desired_width(420.0).margin(Margin::symmetric(10, 6)));
+                            ui.end_row();
+                        };
+                        row(ui, "Upload URL", &mut c.url, "https://example.com/api/upload");
+                        row(ui, "File field", &mut c.file_field, "file");
+                        row(ui, "Link in reply", &mut c.link, "data.link (empty: the whole reply)");
+                        ui.label(RichText::new("Form fields").color(t.text));
+                        ui.add(egui::TextEdit::multiline(&mut self.custom_fields).hint_text("name=value, one per line").desired_rows(2).desired_width(420.0));
+                        ui.end_row();
+                        ui.label(RichText::new("Headers").color(t.text));
+                        ui.add(egui::TextEdit::multiline(&mut self.custom_headers).hint_text("Authorization: Bearer ...").desired_rows(2).desired_width(420.0));
+                        ui.end_row();
+                    });
+                    ui.label(theme::caption("Headers often hold an API key, so they are stored encrypted for your user account.").color(t.text3));
+                });
+            }
+        }
+        let d = &mut self.draft;
+        let target = d.share.target.label();
+        theme::setting(ui, t, icons, Some(icon::UPLOAD), "Upload every replay", &format!("Send each saved clip to {target} automatically"), |ui| {
             theme::toggle(ui, t, &mut d.share.auto_upload);
         });
         theme::setting(ui, t, icons, Some(icon::LINK), "Copy the link after an upload", "", |ui| {
@@ -453,11 +524,20 @@ impl SettingsPage {
         c.detection.include = Self::lines(&self.include_text);
         c.detection.exclude = Self::lines(&self.exclude_text);
         c.share.streamable_password_protected = current.share.streamable_password_protected.clone();
+        c.share.custom.fields = self
+            .custom_fields
+            .lines()
+            .filter_map(|l| l.split_once('=').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+            .filter(|(k, _)| !k.is_empty())
+            .collect();
+        // Headers are compared as typed; they are encrypted only when saved.
+        c.share.custom.headers_protected = current.share.custom.headers_protected.clone();
         c.sanitized()
     }
 
     fn dirty(&self, current: &Config) -> bool {
-        !self.password.is_empty() || self.built(current) != *current
+        let saved_headers = crate::sys::secret::unprotect(&current.share.custom.headers_protected).unwrap_or_default();
+        !self.password.is_empty() || self.custom_headers != saved_headers || self.built(current) != *current
     }
 
     fn save(&mut self, shared: &mut Shared) -> bool {
@@ -470,6 +550,8 @@ impl SettingsPage {
             shared.toast(format!("Fix the hotkey first: {e}"), true);
             return false;
         }
+        new.share.custom.headers_protected =
+            if self.custom_headers.trim().is_empty() { String::new() } else { crate::sys::secret::protect(self.custom_headers.trim()) };
         if !self.password.is_empty() {
             new.share.streamable_password_protected = crate::sys::secret::protect(&self.password);
             if new.share.streamable_password_protected.is_empty() {

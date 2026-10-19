@@ -73,8 +73,10 @@ fn sdr_white(monitor: isize) -> Option<f32> {
             return None;
         }
         for p in &paths[..np as usize] {
-            let mut name = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
-            name.header = header(DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>(), p.sourceInfo.adapterId, p.sourceInfo.id);
+            let mut name = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+                header: header(DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>(), p.sourceInfo.adapterId, p.sourceInfo.id),
+                ..Default::default()
+            };
             if DisplayConfigGetDeviceInfo(&mut name.header) != 0 {
                 continue;
             }
@@ -82,8 +84,10 @@ fn sdr_white(monitor: isize) -> Option<f32> {
             if src != device {
                 continue;
             }
-            let mut white = DISPLAYCONFIG_SDR_WHITE_LEVEL::default();
-            white.header = header(DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>(), p.targetInfo.adapterId, p.targetInfo.id);
+            let mut white = DISPLAYCONFIG_SDR_WHITE_LEVEL {
+                header: header(DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL, size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>(), p.targetInfo.adapterId, p.targetInfo.id),
+                ..Default::default()
+            };
             if DisplayConfigGetDeviceInfo(&mut white.header) != 0 {
                 return None;
             }

@@ -786,14 +786,17 @@ impl Editor {
                     shared.toast("Could not use the clipboard.", true);
                 }
             }
-            let has_login = !shared.cfg.share.streamable_email.is_empty() && !shared.cfg.share.streamable_password_protected.is_empty();
-            let up = ui.add_enabled(!busy, egui::Button::new(theme::label_with_icon(icons, icon::UPLOAD, "Upload to Streamable")).min_size(full(ui)));
-            let up = if has_login { up } else { up.on_hover_text("Add your Streamable login in Settings first") };
+            let ready = crate::share::ready(&shared.cfg.share);
+            let label = format!("Upload to {}", shared.cfg.share.target.label());
+            let up = ui.add_enabled(!busy, egui::Button::new(theme::label_with_icon(icons, icon::UPLOAD, &label)).min_size(full(ui)));
+            let up = match ready {
+                Ok(()) => up.on_hover_text(shared.cfg.share.target.describe()),
+                Err(why) => up.on_hover_text(why),
+            };
             if up.clicked() {
-                if has_login {
-                    shared.start_upload(&ctx, self.path.clone());
-                } else {
-                    shared.toast("Add your Streamable login in Settings > Sharing first.", true);
+                match ready {
+                    Ok(()) => shared.start_upload(&ctx, self.path.clone()),
+                    Err(why) => shared.toast(why, true),
                 }
             }
             if let Some(url) = shared.uploads.get(self.path.to_string_lossy().as_ref()).cloned() {

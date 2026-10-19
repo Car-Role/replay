@@ -235,12 +235,8 @@ impl Converter {
         Ok(view)
     }
 
-    /// Draws the `crop` rectangle (x, y, w, h) of `src` into output slot `slot`.
-    pub fn convert(&mut self, src: &ID3D11Texture2D, crop: (u32, u32, u32, u32), slot: usize) -> Result<()> {
-        self.convert_slice(src, 0, crop, slot)
-    }
-
-    /// Like `convert`, for one slice of a texture array (decoder output).
+    /// Draws the `crop` rectangle (x, y, w, h) of slice `slice` of `src`
+    /// (a texture array for decoder output) into output slot `slot`.
     pub fn convert_slice(&mut self, src: &ID3D11Texture2D, slice: u32, crop: (u32, u32, u32, u32), slot: usize) -> Result<()> {
         self.convert_with(src, slice, crop, slot, None)
     }

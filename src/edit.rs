@@ -363,7 +363,10 @@ pub fn export(segments: &[Segment], out: &Path, mix: &Mix, video: &VideoMode, pr
 }
 
 /// Decodes the segments' game and mic audio into one timeline each.
-fn decode_segments(files: &[Mp4In], segments: &[Segment], ranges: &[(f64, f64)], progress: &dyn Fn(f32)) -> Result<(Option<Vec<i16>>, Option<Vec<i16>>), String> {
+/// Decoded game and mic audio (48 kHz stereo), when the clips have them.
+type GameAndMic = (Option<Vec<i16>>, Option<Vec<i16>>);
+
+fn decode_segments(files: &[Mp4In], segments: &[Segment], ranges: &[(f64, f64)], progress: &dyn Fn(f32)) -> Result<GameAndMic, String> {
     let mut handles: Vec<File> = segments.iter().map(|s| File::open(&s.path)).collect::<Result<_, _>>().map_err(|e| e.to_string())?;
     let total: f64 = ranges.iter().map(|r| r.1).sum();
     let total_frames = (total * f64::from(SAMPLE_RATE)).round() as usize;

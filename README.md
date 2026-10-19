@@ -19,9 +19,18 @@ It finds games by itself and can record several games at the same time.
   not recorded. The microphone has its own track. Track 1 is a mix of both, for players that only play
   one track.
 - **Windowed games** are cropped to the game area (no title bar).
-- **Library window** with thumbnails, playback, trim, join and audio remix. Video is never re-encoded.
-- **Sharing.** Copy the file to the clipboard (paste it into Discord), upload to Streamable, copy the
-  link, or upload every saved clip on its own.
+- **Full sessions too.** `Alt+F9` starts and stops a recording of the whole session. It is written to
+  disk as it goes, so it can run for hours with no extra memory.
+- **Per-game settings.** Each game can have its own frame rate, resolution, quality and replay length.
+- **In-game notice.** A small card in a corner of the game confirms each save. It never shows in clips.
+- **Webcam** in a corner of recordings (optional). The camera is on only while a game records.
+- **HDR games** are converted to normal colors on the GPU, so clips do not look washed out.
+- **Library window** with favorites, tags, rename, sort, filters and storage limits.
+- **Editor**: trim with a scrubbing filmstrip, join, audio remix, exact-frame cuts, exports that fit a
+  size limit (Discord 10 MB, 50 MB, 500 MB or your own), vertical 9:16 exports for Shorts and TikTok,
+  and montages with music.
+- **Sharing.** Copy the file to the clipboard (paste it into Discord), upload to Streamable, Catbox,
+  Litterbox or any ShareX custom uploader, copy the link, or upload every saved clip on its own.
 - **Fast-start MP4.** Clips play in web players while they download.
 
 ## Resource use
@@ -82,12 +91,15 @@ Logs are in `%LOCALAPPDATA%\Replay\`.
 | `replay --library [clip]` | Opens the library, optionally with a clip selected. |
 | `replay --settings` | Opens the library on the Settings tab. |
 | `replay --save` / `--save-all` | Asks the running recorder to save (for Stream Deck or macro keys). |
+| `replay --record` | Starts or stops a full session recording of the game in front. |
 | `replay --detect` | Lists open windows and shows which ones count as games, and why. |
 | `replay --probe` | Shows the GPU, encoders and microphones. |
 | `replay --selftest [s] [av1\|hevc\|h264]` | Records the main monitor, saves a clip and checks that it decodes. |
 | `replay --verify <file>` | Reads a clip back through Media Foundation and reports each track. |
 | `replay --trim <file> <start> <end>` | Saves a trimmed copy. |
-| `replay --join <file> <file>...` | Joins clips that use the same video settings. |
+| `replay --join <file> <file>... [--music <file>]` | Joins clips, with optional music under them. |
+| `replay --export <file> <start> <end> [--size MB] [--vertical 0..1] [--codec h264]` | Re-encodes a part of a clip: exact cut, size target, vertical crop. |
+| `replay --check-update [--as-version x.y.z]` | Downloads and verifies the newest release without installing it. |
 
 ## How it works
 
@@ -113,8 +125,13 @@ hotkey --> snapshot of the rings (no copy) --> MP4 writer (moov first) --> Video
 - NVIDIA does not offer a public API for ShadowPlay itself. Replay uses the same parts that ShadowPlay
   uses (desktop capture and NVENC), through public Windows APIs.
 - A few games in true exclusive fullscreen give no window frames. Replay then records their monitor instead.
-- HDR games are recorded in SDR.
-- Trims and joins start on the keyframe at or before the chosen point (within 0.5 s), because video is
-  not re-encoded. Joins need clips with the same codec, size and settings.
-- The Streamable upload uses Streamable's public upload API with your email and password. It has not
-  been tested against a live account yet.
+- HDR games are saved in SDR (converted on the GPU). The conversion has been tested on an SDR monitor
+  only so far.
+- Fast trims and joins start on the keyframe at or before the chosen point (within 0.5 s). Turn on
+  "Exact cut" to encode the video again and cut on the exact frame.
+- The in-game notice shows over borderless and windowed games. Some games in true exclusive fullscreen
+  hide it.
+- A session recording that is cut off by a crash or power loss cannot be played (the index is written
+  at the end).
+- The uploads to Streamable, Catbox, Litterbox and custom uploaders have not been tested against the live
+  services yet.

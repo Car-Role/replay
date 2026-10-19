@@ -660,7 +660,7 @@ mod tests {
             let v: Vec<SampleInfo> = (0..30).map(|i| SampleInfo { time: (round * 30 + i) * 1500, duration: 0, size: 10, key: i == 0 }).collect();
             w.append(0, &v, &vec![0xA0 | round as u8; 300]).unwrap();
             let a: Vec<SampleInfo> = (0..24).map(|i| SampleInfo { time: (round * 24 + i) * 1024, duration: 1024, size: 4, key: true }).collect();
-            w.append(1, &a, &vec![0xB0 | round as u8; 96]).unwrap();
+            w.append(1, &a, &[0xB0 | round as u8; 96]).unwrap();
         }
         let out = w.finish(|_| 1500).unwrap().into_inner();
         let ftyp_len = u32::from_be_bytes(out[..4].try_into().unwrap()) as usize;

@@ -185,23 +185,78 @@ impl Default for DetectionConfig {
     }
 }
 
+/// Where clips are uploaded.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UploadTarget {
+    Streamable,
+    Catbox,
+    Litterbox,
+    Custom,
+}
+
+impl UploadTarget {
+    pub const ALL: [UploadTarget; 4] = [UploadTarget::Streamable, UploadTarget::Catbox, UploadTarget::Litterbox, UploadTarget::Custom];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UploadTarget::Streamable => "Streamable",
+            UploadTarget::Catbox => "Catbox",
+            UploadTarget::Litterbox => "Litterbox",
+            UploadTarget::Custom => "Custom uploader",
+        }
+    }
+
+    pub fn describe(self) -> &'static str {
+        match self {
+            UploadTarget::Streamable => "Your Streamable account. Links show a video player",
+            UploadTarget::Catbox => "No account. Files up to 200 MB stay online; anyone with the link can see them",
+            UploadTarget::Litterbox => "No account. Files up to 1 GB are deleted after the time you choose",
+            UploadTarget::Custom => "Any service with an upload form, set up like a ShareX custom uploader",
+        }
+    }
+}
+
+/// A ShareX-style custom uploader: a multipart POST and where to find the link.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct CustomUploader {
+    pub name: String,
+    pub url: String,
+    /// The form field that carries the file.
+    pub file_field: String,
+    /// Extra form fields.
+    pub fields: BTreeMap<String, String>,
+    /// Request headers ("Name: value" lines), encrypted like the password.
+    pub headers_protected: String,
+    /// Where the link is in a JSON reply ("data.link"); empty: the whole reply.
+    pub link: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct ShareConfig {
+    pub target: UploadTarget,
     pub auto_upload: bool,
     pub copy_link_after_upload: bool,
     pub streamable_email: String,
     /// Stored encrypted with Windows DPAPI for the current user, base64 encoded.
     pub streamable_password_protected: String,
+    /// How long Litterbox keeps files: 1, 12, 24 or 72 hours.
+    pub litterbox_hours: u32,
+    pub custom: CustomUploader,
 }
 
 impl Default for ShareConfig {
     fn default() -> Self {
         Self {
+            target: UploadTarget::Streamable,
             auto_upload: false,
             copy_link_after_upload: true,
             streamable_email: String::new(),
             streamable_password_protected: String::new(),
+            litterbox_hours: 72,
+            custom: CustomUploader::default(),
         }
     }
 }

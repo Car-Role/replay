@@ -88,6 +88,10 @@ pub fn pick_exe() -> Option<PathBuf> {
     dialog(false, Some(("Programs", "*.exe")))
 }
 
+pub fn pick_file(name: &str, pattern: &str) -> Option<PathBuf> {
+    dialog(false, Some((name, pattern)))
+}
+
 pub fn pick_audio() -> Option<PathBuf> {
     dialog(false, Some(("Music", "*.mp3;*.m4a;*.aac;*.wav;*.flac;*.wma")))
 }

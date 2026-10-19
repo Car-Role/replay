@@ -184,12 +184,9 @@ impl Shared {
 
     pub fn start_upload(&mut self, ctx: &egui::Context, path: PathBuf) {
         let share = self.cfg.share.clone();
-        let label = format!("Uploading {}", path.file_name().unwrap_or_default().to_string_lossy());
+        let label = format!("Uploading {} to {}", path.file_name().unwrap_or_default().to_string_lossy(), share.target.label());
         self.spawn_job(ctx, JobKind::Upload, label, move |progress| {
-            let password = crate::sys::secret::unprotect(&share.streamable_password_protected).unwrap_or_default();
-            let r = crate::share::upload_streamable(&path, &share.streamable_email, &password, &|sent, total| {
-                progress(sent as f32 / total.max(1) as f32)
-            });
+            let r = crate::share::upload(&path, &share, &|sent, total| progress(sent as f32 / total.max(1) as f32));
             match r {
                 Ok(url) => JobDone::Uploaded(path, url),
                 Err(e) => JobDone::Failed(format!("Upload failed: {e}")),
@@ -280,7 +277,8 @@ impl LibraryApp {
             confirm_delete: None,
             logo,
             recorder_running: crate::sys::shell::recorder_running(),
-            recorder_checked: Instant::now(),
+            // Check at once, so stale "recording" flags never show.
+            recorder_checked: Instant::now() - Duration::from_secs(3),
             games: crate::games::GameDb::load(),
             lib: crate::library::Library::load(),
             sort: Sort::Newest,
@@ -335,6 +333,13 @@ impl LibraryApp {
             self.recorder_running = crate::sys::shell::recorder_running();
             self.recorder_checked = Instant::now();
             self.games = crate::games::GameDb::load();
+            if !self.recorder_running {
+                // A recorder that crashed or was ended cannot clear its flags.
+                for g in &mut self.games.games {
+                    g.recording = false;
+                    g.capturing = false;
+                }
+            }
             // Keep "Recording now" and the capture button current.
             ctx.request_repaint_after(Duration::from_secs(2));
         }
