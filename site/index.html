@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Replay: instant replay for Windows games</title>
+<meta name="description" content="Replay keeps the last minutes of every game in memory using your GPU's video encoder. Press Alt+F10 to save the clip. Free and open source.">
+<link rel="icon" type="image/png" href="favicon.png">
+<meta property="og:title" content="Replay">
+<meta property="og:description" content="Instant replay for Windows games, with almost no performance cost.">
+<meta property="og:image" content="icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@600;700&family=Figtree:wght@400;500;600&display=swap">
+<style>
+/* Layout: a single column. Hero with the download, an illustrated trim bar,
+   then features, steps, and notes. Brand colors come from the app icon. */
+:root {
+  --night-1: #2a3042;
+  --night-2: #141824;
+  --sunset-1: #ff6a3d;
+  --sunset-2: #ff2d87;
+  --bg: #0f121a;
+  --surface: #171b26;
+  --surface-2: #1e2331;
+  --line: #2a3142;
+  --fg: #eef0f5;
+  --muted: #a3abbd;
+  --accent: #ff6b81;
+  --display: "Unbounded", "Segoe UI", system-ui, sans-serif;
+  --body: "Figtree", "Segoe UI", system-ui, sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.6 var(--body);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+header .wrap { display: flex; align-items: center; justify-content: space-between; height: 72px; }
+.brand { display: flex; align-items: center; gap: 10px; color: var(--fg); text-decoration: none; font-weight: 600; font-size: 18px; }
+.brand img { width: 32px; height: 32px; }
+nav a { color: var(--muted); text-decoration: none; margin-left: 20px; font-weight: 500; }
+nav a:hover { color: var(--fg); }
+
+.hero { padding: 72px 0 40px; text-align: center; }
+h1 {
+  font-family: var(--display);
+  font-size: clamp(36px, 6vw, 64px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  margin: 0 auto 20px;
+  max-width: 14ch;
+  text-wrap: balance;
+}
+h1 em {
+  font-style: normal;
+  background: linear-gradient(90deg, var(--sunset-1), var(--sunset-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.lede { color: var(--muted); font-size: 19px; max-width: 58ch; margin: 0 auto 32px; }
+.cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.btn {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 14px 22px; border-radius: 10px; font-weight: 600; text-decoration: none;
+  border: 1px solid var(--line); color: var(--fg); background: var(--surface);
+  transition: transform .12s, background .12s;
+}
+.btn:hover { background: var(--surface-2); }
+.btn.primary {
+  border: none; color: #fff;
+  background: linear-gradient(135deg, var(--sunset-1), var(--sunset-2));
+  box-shadow: 0 10px 30px -10px rgba(255, 45, 135, .6);
+}
+.btn.primary:hover { transform: translateY(-1px); }
+.btn svg { width: 20px; height: 20px; }
+.meta { margin-top: 16px; color: var(--muted); font-size: 14px; }
+.meta .sep { margin: 0 8px; opacity: .5; }
+.os-note { margin-top: 10px; font-size: 14px; color: #fcd77f; }
+
+/* Illustration: the editor's trim bar. */
+.demo {
+  margin: 56px auto 0; max-width: 860px; padding: 20px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
+}
+.screen {
+  aspect-ratio: 16 / 7; border-radius: 10px; position: relative; overflow: hidden;
+  background:
+    radial-gradient(ellipse at 30% 60%, rgba(255,106,61,.35), transparent 55%),
+    radial-gradient(ellipse at 75% 35%, rgba(255,45,135,.30), transparent 50%),
+    linear-gradient(160deg, var(--night-1), var(--night-2));
+}
+.screen .play {
+  position: absolute; inset: 0; margin: auto; width: 64px; height: 64px; border-radius: 50%;
+  background: rgba(0,0,0,.45); display: grid; place-items: center;
+}
+.screen .play::after {
+  content: ""; width: 0; height: 0; margin-left: 6px;
+  border-left: 18px solid #fff; border-top: 12px solid transparent; border-bottom: 12px solid transparent;
+}
+.strip { position: relative; margin-top: 18px; height: 54px; display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; border-radius: 6px; overflow: hidden; }
+.strip span { background: linear-gradient(160deg, #3a3348, #222838); }
+.strip span:nth-child(3n) { background: linear-gradient(160deg, #50384a, #2a2738); }
+.strip span:nth-child(4n+1) { background: linear-gradient(160deg, #3d4058, #1c2130); }
+.dim { position: absolute; top: 0; bottom: 0; background: rgba(0,0,0,.6); }
+.dim.l { left: 0; width: 22%; }
+.dim.r { right: 0; width: 18%; }
+.sel { position: absolute; top: -3px; bottom: -3px; left: 22%; right: 18%; border: 3px solid var(--accent); border-radius: 4px; }
+.sel::before, .sel::after { content: ""; position: absolute; top: -3px; bottom: -3px; width: 12px; background: var(--accent); }
+.sel::before { left: -12px; border-radius: 4px 0 0 4px; }
+.sel::after { right: -12px; border-radius: 0 4px 4px 0; }
+.head { position: absolute; top: -8px; bottom: -4px; left: 46%; width: 2px; background: #fff; }
+.head::before { content: ""; position: absolute; top: -6px; left: -4px; width: 10px; height: 10px; border-radius: 50%; background: #fff; }
+.bubble { position: absolute; top: -40px; left: 46%; transform: translateX(-50%); background: #2c2c2c; border: 1px solid #444; padding: 2px 8px; border-radius: 4px; font-size: 12px; white-space: nowrap; }
+.caption { margin: 14px 0 0; color: var(--muted); font-size: 14px; text-align: center; }
+
+section { padding: 72px 0 0; }
+h2 { font-family: var(--display); font-size: clamp(24px, 3.4vw, 34px); margin: 0 0 10px; letter-spacing: -0.01em; text-wrap: balance; }
+.sub { color: var(--muted); margin: 0 0 32px; max-width: 60ch; }
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+.card h3 { margin: 0 0 6px; font-size: 17px; }
+.card p { margin: 0; color: var(--muted); font-size: 15px; }
+.card .n { font-family: var(--display); font-size: 13px; color: var(--accent); letter-spacing: .06em; }
+.stat { font-family: var(--display); font-size: 26px; margin: 4px 0 2px; }
+.steps { counter-reset: s; }
+kbd { font: 600 13px var(--body); background: var(--surface-2); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 1px 7px; }
+.notes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+code, pre { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 10px 0 0; }
+footer { margin-top: 96px; border-top: 1px solid var(--line); padding: 28px 0 48px; color: var(--muted); font-size: 14px; }
+footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+@media (max-width: 860px) {
+  .grid { grid-template-columns: 1fr 1fr; }
+  .notes { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .grid { grid-template-columns: 1fr; }
+  nav a:not(.gh) { display: none; }
+  .hero { padding-top: 40px; }
+}
+@media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <a class="brand" href="#"><img src="icon.png" alt="" width="32" height="32">Replay</a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#faq">Notes</a>
+      <a class="gh" href="https://github.com/Car-Role/replay">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <h1>Save the play <em>after</em> it happens.</h1>
+    <p class="lede">Replay keeps the last minutes of every game in memory, encoded by your graphics card. Press <kbd>Alt</kbd>+<kbd>F10</kbd> and the clip is saved. Trim it, mix the audio and share it in seconds.</p>
+    <div class="cta">
+      <a class="btn primary" id="dl" href="https://github.com/Car-Role/replay/releases/latest/download/Replay-Setup-windows-x64.exe">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.5 4.4v7.1H3zm8.5-1.3L21 2.8v8.7h-9.5zM3 12.5h7.5v7.1L3 18.5zm8.5 0H21v8.7l-9.5-1.4z"/></svg>
+        Download for Windows
+      </a>
+      <a class="btn" href="https://github.com/Car-Role/replay/releases/latest/download/replay-windows-x64.zip">Portable .zip</a>
+    </div>
+    <p class="meta"><span id="ver">Latest version</span><span class="sep">·</span>Windows 10 (2004) or 11<span class="sep">·</span>Free and open source</p>
+    <p class="os-note" id="osnote" hidden>Replay is for Windows for now. macOS and Linux versions are in progress.</p>
+
+    <div class="demo" aria-hidden="true">
+      <div class="screen"><div class="play"></div></div>
+      <div class="strip">
+        <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+        <div class="dim l"></div><div class="dim r"></div>
+        <div class="sel"></div>
+        <div class="head"></div>
+        <div class="bubble">0:14.20</div>
+      </div>
+    </div>
+    <p class="caption">Drag the handles and the preview shows that exact frame. Saving copies the video, so it takes seconds and loses no quality.</p>
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>Built to stay out of your frame rate</h2>
+      <p class="sub">Frames go from the game to your GPU's video encoder without passing through the CPU. When no game runs, Replay sleeps.</p>
+      <div class="grid">
+        <div class="card"><span class="n">IDLE</span><p class="stat">0 ms</p><p>CPU time over 30 seconds with no game running, and about 3 MB of memory.</p></div>
+        <div class="card"><span class="n">RECORDING</span><p class="stat">~5%</p><p>Of one CPU core while recording 1080p60 with game audio and mic.</p></div>
+        <div class="card"><span class="n">SAVING</span><p class="stat">&lt; 0.5 s</p><p>To write a two-minute clip. The buffer is never copied.</p></div>
+        <div class="card"><h3>Every game, found by itself</h3><p>Steam, Epic, Battle.net, Riot, GOG, EA, Ubisoft and Jagex launchers, game folders, the Windows Game Bar list and fullscreen 3D apps. Turn any game off on the Games page.</p></div>
+        <div class="card"><h3>Several games at once</h3><p>Each game has its own buffer. One hotkey saves the game in front, another saves all of them.</p></div>
+        <div class="card"><h3>Your voice on its own track</h3><p>Only the game's sound (not Discord or music), your mic, and a mix of both for players that play one track.</p></div>
+        <div class="card"><h3>AV1, HEVC or H.264</h3><p>NVENC on NVIDIA cards, and the hardware encoders on AMD and Intel. Up to 240 fps.</p></div>
+        <div class="card"><h3>Trim, join and remix</h3><p>A filmstrip trim bar that scrubs the preview, joins without re-encoding, and separate game and mic volume.</p></div>
+        <div class="card"><h3>Share in one click</h3><p>Copy the file and paste it into Discord, or upload it to Streamable and get the link copied.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <h2>Three steps</h2>
+      <p class="sub">No account and no setup.</p>
+      <div class="grid steps">
+        <div class="card"><span class="n">01</span><h3>Install</h3><p>Run the installer. It needs no admin rights and puts Replay in the notification area.</p></div>
+        <div class="card"><span class="n">02</span><h3>Play</h3><p>Start any game. The icon turns red when Replay is recording it.</p></div>
+        <div class="card"><span class="n">03</span><h3>Press <kbd>Alt</kbd>+<kbd>F10</kbd></h3><p>The last two minutes are saved to <code>Videos\Replay</code>. Click the notice to trim and share.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="wrap">
+      <h2>Good to know</h2>
+      <div class="notes">
+        <div class="card"><h3>Windows SmartScreen</h3><p>Replay is not code-signed yet, so Windows may warn the first time. Choose <strong>More info</strong>, then <strong>Run anyway</strong>.</p></div>
+        <div class="card"><h3>The NVIDIA app uses Alt+F10 too</h3><p>Turn off Instant Replay in the NVIDIA app, or pick other keys in Replay's settings. Running both records everything twice.</p></div>
+        <div class="card"><h3>Updates</h3><p>Replay checks GitHub once a day, downloads new versions in the background and installs them when you choose. Each update must carry a valid signature from the release key, or it is not installed.</p></div>
+        <div class="card"><h3>Privacy</h3><p>Replay sends no data about you. It contacts GitHub only to check for updates (you can turn this off), and Streamable only when you upload.</p></div>
+        <div class="card"><h3>Check a download</h3><p>Every release has <code>SHA256SUMS.txt</code>, signed with the key in the repository:</p>
+<pre>minisign -Vm SHA256SUMS.txt -P RWScCVL9ehOESIIXybJ0DWwRO1Y3O43uZSFI37/rYhyCrHMmNFmAjjNG</pre></div>
+        <div class="card"><h3>macOS and Linux</h3><p>In progress. The code is shared, and those versions will come in a later release.</p></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Replay is free software under the MIT license.</span>
+    <span><a href="https://github.com/Car-Role/replay">Source code</a> · <a href="https://github.com/Car-Role/replay/releases">All releases</a> · <a href="https://github.com/Car-Role/replay/issues">Report a problem</a></span>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const ua = navigator.userAgent;
+  if (!/Windows/i.test(ua)) document.getElementById('osnote').hidden = false;
+  fetch('https://api.github.com/repos/Car-Role/replay/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
+    .then(r => (r.ok ? r.json() : null))
+    .then(rel => {
+      if (!rel || !rel.tag_name) return;
+      const date = rel.published_at ? new Date(rel.published_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+      document.getElementById('ver').textContent = `Version ${rel.tag_name.replace(/^v/, '')}${date ? ' · ' + date : ''}`;
+    })
+    .catch(() => {});
+})();
+</script>
+</body>
+</html>
