@@ -1,0 +1,10 @@
+[package]
+name = "icongen"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Renders assets/icon*.svg into the PNG, ICO and RGBA files the app and installers use"
+
+[dependencies]
+resvg = "0.48"
+ico = "0.6"

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="night" gradientUnits="userSpaceOnUse" x1="6" y1="4" x2="58" y2="60"><stop offset="0" stop-color="#2A3042"/><stop offset="1" stop-color="#141824"/></linearGradient>
+    <linearGradient id="sunset" gradientUnits="userSpaceOnUse" x1="16" y1="20" x2="48" y2="44"><stop offset="0" stop-color="#FF6A3D"/><stop offset="1" stop-color="#FF2D87"/></linearGradient>
+  </defs>
+  <path d="M62 32 L61.95 42.38 L61.8 46.01 L61.55 48.67 L61.2 50.82 L60.74 52.63 L60.18 54.19 L59.51 55.56 L58.72 56.76 L57.8 57.8 L56.76 58.72 L55.56 59.51 L54.19 60.18 L52.63 60.74 L50.82 61.2 L48.67 61.55 L46.01 61.8 L42.38 61.95 L32 62 L21.62 61.95 L17.99 61.8 L15.33 61.55 L13.18 61.2 L11.37 60.74 L9.81 60.18 L8.44 59.51 L7.24 58.72 L6.2 57.8 L5.28 56.76 L4.49 55.56 L3.82 54.19 L3.26 52.63 L2.8 50.82 L2.45 48.67 L2.2 46.01 L2.05 42.38 L2 32 L2.05 21.62 L2.2 17.99 L2.45 15.33 L2.8 13.18 L3.26 11.37 L3.82 9.81 L4.49 8.44 L5.28 7.24 L6.2 6.2 L7.24 5.28 L8.44 4.49 L9.81 3.82 L11.37 3.26 L13.18 2.8 L15.33 2.45 L17.99 2.2 L21.62 2.05 L32 2 L42.38 2.05 L46.01 2.2 L48.67 2.45 L50.82 2.8 L52.63 3.26 L54.19 3.82 L55.56 4.49 L56.76 5.28 L57.8 6.2 L58.72 7.24 L59.51 8.44 L60.18 9.81 L60.74 11.37 L61.2 13.18 L61.55 15.33 L61.8 17.99 L61.95 21.62Z" fill="url(#night)"/>
+  <path d="M20 32 L32 23.6 L32 40.4Z M32 32 L44 23.6 L44 40.4Z" fill="url(#sunset)" stroke="url(#sunset)" stroke-width="2.64" stroke-linejoin="round"/>
+</svg>

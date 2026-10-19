@@ -17,19 +17,10 @@ use crate::config::Config;
 use editor::Editor;
 
 pub fn run(open: Option<PathBuf>, settings: bool) {
-    let icon = {
-        let size = 64u32;
-        let mut rgba = vec![0u8; (size * size * 4) as usize];
-        let c = (size as f32 - 1.0) / 2.0;
-        for y in 0..size {
-            for x in 0..size {
-                let d = ((x as f32 - c).powi(2) + (y as f32 - c).powi(2)).sqrt();
-                let a = ((size as f32 * 0.45 - d) + 0.5).clamp(0.0, 1.0);
-                let i = ((y * size + x) * 4) as usize;
-                rgba[i..i + 4].copy_from_slice(&[0xe5, 0x39, 0x35, (a * 255.0) as u8]);
-            }
-        }
-        egui::IconData { rgba, width: size, height: size }
+    let icon = egui::IconData {
+        rgba: include_bytes!("../../assets/generated/icon-64.rgba").to_vec(),
+        width: 64,
+        height: 64,
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

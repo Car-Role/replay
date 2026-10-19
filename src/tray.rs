@@ -6,7 +6,10 @@ use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_NOSOUND, NIIF_USER, NIIF_WARNING, NIM_ADD, NIM_DELETE,
     NIM_MODIFY, NIM_SETVERSION, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
-use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, DestroyIcon, GetSystemMetrics, HICON, ICONINFO, SM_CXSMICON};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateIconIndirect, DestroyIcon, GetSystemMetrics, HICON, ICONINFO, IMAGE_ICON, LR_DEFAULTCOLOR, LoadImageW, SM_CXSMICON,
+};
+use windows::core::PCWSTR;
 
 pub const TRAY_ID: u32 = 1;
 
@@ -16,9 +19,20 @@ pub struct Icons {
 }
 
 impl Icons {
+    /// Loads the icons embedded by build.rs at the small-icon size for this
+    /// DPI. Falls back to drawn icons if the resources are missing.
     pub fn create() -> Self {
-        let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.clamp(16, 64) as u32;
-        Self { idle: make_icon(size, false), recording: make_icon(size, true) }
+        let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.clamp(16, 64);
+        let load = |id: u16| unsafe {
+            let module = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).ok()?;
+            LoadImageW(Some(module.into()), PCWSTR(id as usize as *const u16), IMAGE_ICON, size, size, LR_DEFAULTCOLOR)
+                .ok()
+                .map(|h| HICON(h.0))
+        };
+        Self {
+            idle: load(1).unwrap_or_else(|| make_icon(size as u32, false)),
+            recording: load(2).unwrap_or_else(|| make_icon(size as u32, true)),
+        }
     }
 }
 
