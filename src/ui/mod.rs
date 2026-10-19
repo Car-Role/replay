@@ -1007,7 +1007,10 @@ impl LibraryApp {
             });
             ui.add_space(4.0);
             let limit = discord_mb;
-            if m.size_mb.is_none() && mb > f64::from(limit) {
+            let soft = m.size_mb.is_some_and(|s| crate::edit::size_target(f64::from(s), total, 128).0 < 800);
+            if soft {
+                ui.label(theme::caption(format!("{} is long for this size, so the picture will be soft. Pick a bigger size or fewer clips.", theme::fmt_short(total))).color(t.caution));
+            } else if m.size_mb.is_none() && mb > f64::from(limit) {
                 ui.label(theme::caption(format!("Too big for Discord ({limit} MB). Pick a Discord size to share it there.")).color(t.caution));
             } else {
                 let note = if m.vertical {
