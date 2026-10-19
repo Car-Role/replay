@@ -14,6 +14,7 @@ pub mod player;
 pub mod secret;
 pub mod session;
 pub mod shell;
+pub mod transcode;
 pub mod tray;
 pub mod verify;
 

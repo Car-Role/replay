@@ -31,6 +31,40 @@ enum Drag {
     Playhead,
 }
 
+/// Export targets in the Export card.
+#[derive(Clone, Copy, PartialEq)]
+enum Preset {
+    Discord10,
+    Discord50,
+    Discord500,
+    Custom,
+    Original,
+}
+
+impl Preset {
+    const ALL: [Preset; 5] = [Preset::Discord10, Preset::Discord50, Preset::Discord500, Preset::Custom, Preset::Original];
+
+    fn label(self) -> &'static str {
+        match self {
+            Preset::Discord10 => "Discord (10 MB)",
+            Preset::Discord50 => "Discord Nitro Basic (50 MB)",
+            Preset::Discord500 => "Discord Nitro (500 MB)",
+            Preset::Custom => "Custom size",
+            Preset::Original => "Full quality",
+        }
+    }
+
+    fn size_mb(self, custom: f64) -> Option<f64> {
+        match self {
+            Preset::Discord10 => Some(10.0),
+            Preset::Discord50 => Some(50.0),
+            Preset::Discord500 => Some(500.0),
+            Preset::Custom => Some(custom),
+            Preset::Original => None,
+        }
+    }
+}
+
 const THUMBS: usize = 24;
 const THUMB_H: usize = 64;
 const STRIP_H: f32 = 64.0;
@@ -61,6 +95,16 @@ pub struct Editor {
     mic_gain: u32,
     keep_separate: bool,
     drag: Option<Drag>,
+    /// Re-encode saves so they start on the exact frame.
+    exact: bool,
+    preset: Preset,
+    custom_mb: f64,
+    /// Vertical 9:16 export, and the crop's horizontal centre (0..1).
+    vertical: bool,
+    crop_center: f32,
+    /// Source size and average video bitrate, for estimates.
+    video_size: (u32, u32),
+    video_kbps: u32,
     last_scrub: Instant,
     film_rx: Option<Receiver<Thumb>>,
     film: Vec<Option<TextureHandle>>,
@@ -69,6 +113,16 @@ pub struct Editor {
 impl Editor {
     pub fn open(ctx: &egui::Context, path: &Path, cfg: &Config) -> Self {
         let info = crate::mux::reader::read(path);
+        let (video_size, video_kbps) = match &info {
+            Ok(m) => (
+                match m.video().map(|v| &v.kind) {
+                    Some(crate::mux::reader::TrackKindIn::Video { width, height, .. }) => (*width, *height),
+                    _ => (1920, 1080),
+                },
+                edit::video_kbps(m),
+            ),
+            Err(_) => ((1920, 1080), 0),
+        };
         let (duration, has_game, has_mic, fps, error) = match &info {
             Ok(m) => {
                 let (g, mi) = edit::audio_sources(m);
@@ -132,6 +186,13 @@ impl Editor {
             mic_gain: cfg.audio.microphone_volume,
             keep_separate: true,
             drag: None,
+            exact: false,
+            preset: Preset::Discord10,
+            custom_mb: 25.0,
+            vertical: false,
+            crop_center: 0.5,
+            video_size,
+            video_kbps,
             last_scrub: Instant::now(),
             film_rx,
             film: (0..THUMBS).map(|_| None).collect(),
@@ -373,12 +434,33 @@ impl Editor {
         let avail = Vec2::new(ui.available_width(), (ui.available_height() - reserve).max(180.0));
         let (vw, vh) = self.texture.as_ref().map(|t| (t.size()[0] as f32, t.size()[1] as f32)).unwrap_or((16.0, 9.0));
         let scale = (avail.x / vw).min(avail.y / vh);
-        let (rect, resp) = ui.allocate_exact_size(Vec2::new(avail.x, vh * scale), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(avail.x, vh * scale), Sense::click_and_drag());
         let p = ui.painter_at(rect);
         p.rect_filled(rect, CornerRadius::same(theme::R_CARD), Color32::BLACK);
+        let img = Rect::from_center_size(rect.center(), Vec2::new(vw * scale, vh * scale));
         if let Some(tex) = &self.texture {
-            let img = Rect::from_center_size(rect.center(), Vec2::new(vw * scale, vh * scale));
             p.image(tex.id(), img, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+        }
+        if self.vertical {
+            // The 9:16 part that a vertical export keeps; drag to move it.
+            let spec = edit::EncodeSpec { codec: crate::config::Codec::H264, bitrate_kbps: 0, cbr: false, max_height: None, vertical: Some(self.crop_center) };
+            let (sw, sh) = self.video_size;
+            let ((cx, _, cw, _), _) = edit::plan_frame(sw, sh, &spec);
+            let x0 = img.left() + img.width() * cx as f32 / sw.max(1) as f32;
+            let w = img.width() * cw as f32 / sw.max(1) as f32;
+            let keep = Rect::from_min_max(Pos2::new(x0, img.top()), Pos2::new(x0 + w, img.bottom()));
+            let shade = Color32::from_black_alpha(170);
+            p.rect_filled(Rect::from_min_max(img.min, Pos2::new(keep.left(), img.bottom())), CornerRadius::ZERO, shade);
+            p.rect_filled(Rect::from_min_max(Pos2::new(keep.right(), img.top()), img.max), CornerRadius::ZERO, shade);
+            p.rect_stroke(keep, CornerRadius::ZERO, Stroke::new(2.0, t.accent), StrokeKind::Inside);
+            if resp.dragged()
+                && let Some(m) = resp.interact_pointer_pos()
+            {
+                self.crop_center = ((m.x - img.left()) / img.width().max(1.0)).clamp(0.0, 1.0);
+            }
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
         }
         if resp.clicked() {
             let on = !self.playing;
@@ -643,13 +725,22 @@ impl Editor {
         theme::card(t).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(theme::body_strong("Save").color(t.text));
+            let how = if self.exact {
+                "The video is encoded again, so the clip starts on the exact frame. This takes a few seconds."
+            } else {
+                "The video is copied, not encoded again, so the start moves to the keyframe just before it (at most 0.5 s)."
+            };
             ui.label(
-                theme::caption(format!(
-                    "Saves the {} selection as a new clip with this audio mix. Video is copied, not re-encoded, so the start moves to the keyframe just before it (at most 0.5 s).",
-                    theme::fmt_time(self.out_point - self.in_point)
-                ))
-                .color(t.text2),
+                theme::caption(format!("Saves the {} selection as a new clip with this audio mix. {how}", theme::fmt_time(self.out_point - self.in_point)))
+                    .color(t.text2),
             );
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Exact cut").color(t.text));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    theme::toggle(ui, t, &mut self.exact);
+                });
+            });
             ui.add_space(8.0);
             let text = theme::label_with_icon(icons, icon::CUT, "Save trimmed clip").color(t.on_accent);
             let b = egui::Button::new(text).fill(t.accent).stroke(Stroke::NONE).min_size(full(ui));
@@ -657,12 +748,27 @@ impl Editor {
                 let seg = vec![Segment { path: self.path.clone(), start: self.in_point, end: self.out_point }];
                 let out = edit::edited_name(&self.path, "edit");
                 let mix = Mix { game: self.game_gain, mic: self.mic_gain, keep_separate: self.keep_separate, bitrate_kbps: shared.cfg.audio.bitrate_kbps };
-                shared.spawn_job(&ctx, JobKind::Export, "Saving clip".into(), move |p| match edit::export(&seg, &out, &mix, p) {
-                    Ok(path) => JobDone::Exported(path),
-                    Err(e) => JobDone::Failed(format!("Save failed: {e}")),
+                let exact = self.exact;
+                let (src, secs) = (self.path.clone(), self.out_point - self.in_point);
+                shared.spawn_job(&ctx, JobKind::Export, "Saving clip".into(), move |p| {
+                    let video = if exact {
+                        match edit::encode_spec(&src, secs, mix.bitrate_kbps * 3, &edit::ExportChoice::default()) {
+                            Ok(s) => edit::VideoMode::Encode(s),
+                            Err(e) => return JobDone::Failed(format!("Save failed: {e}")),
+                        }
+                    } else {
+                        edit::VideoMode::Copy
+                    };
+                    match edit::export(&seg, &out, &mix, &video, p) {
+                        Ok(path) => JobDone::Exported(path),
+                        Err(e) => JobDone::Failed(format!("Save failed: {e}")),
+                    }
                 });
             }
         });
+        ui.add_space(12.0);
+
+        self.export_card(ui, t, icons, shared, busy);
         ui.add_space(12.0);
 
         theme::card(t).show(ui, |ui| {
@@ -713,6 +819,99 @@ impl Editor {
         ui.add_space(12.0);
         ui.label(theme::caption("Space play  ·  I / O set start and end  ·  ← → step  ·  Shift for 1 s  ·  Home / End").color(t.text3));
         action
+    }
+}
+
+impl Editor {
+    /// Export for Discord, phones or a custom size: the selection is encoded
+    /// again with H.264, which every app and site plays.
+    fn export_card(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, shared: &mut Shared, busy: bool) {
+        let ctx = ui.ctx().clone();
+        theme::card(t).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(theme::body_strong("Export").color(t.text));
+            ui.label(theme::caption("A copy that fits a size limit or a phone screen. Plays everywhere (H.264).").color(t.text2));
+            ui.add_space(8.0);
+            let w = ui.available_width();
+            egui::ComboBox::from_id_salt("preset").width(w).selected_text(self.preset.label()).show_ui(ui, |ui| {
+                for p in Preset::ALL {
+                    ui.selectable_value(&mut self.preset, p, p.label());
+                }
+            });
+            if self.preset == Preset::Custom {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Largest size").color(t.text));
+                    ui.add(egui::DragValue::new(&mut self.custom_mb).range(1.0..=4000.0).speed(1.0).suffix(" MB"));
+                });
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let half = (ui.available_width() - 4.0) / 2.0;
+                for (v, label) in [(false, "Landscape"), (true, "Vertical 9:16")] {
+                    let on = self.vertical == v;
+                    let b = egui::Button::new(RichText::new(label).color(if on { t.on_accent } else { t.text }))
+                        .fill(if on { t.accent } else { t.control })
+                        .min_size(Vec2::new(half, theme::CONTROL_H));
+                    if ui.add(b).clicked() {
+                        self.vertical = v;
+                    }
+                }
+            });
+            if self.vertical {
+                ui.label(theme::caption("Drag the frame on the video to choose what stays in the picture.").color(t.text2));
+            }
+
+            // Estimate what comes out.
+            let secs = (self.out_point - self.in_point).max(0.1);
+            let size_mb = self.preset.size_mb(self.custom_mb);
+            let small = size_mb.is_some();
+            let audio_kbps = if small { 128 } else { shared.cfg.audio.bitrate_kbps * if self.keep_separate && self.has_mic { 3 } else { 1 } };
+            let spec = match size_mb {
+                Some(mb) => {
+                    let (k, h) = edit::size_target(mb, secs, audio_kbps);
+                    edit::EncodeSpec { codec: crate::config::Codec::H264, bitrate_kbps: k, cbr: true, max_height: h, vertical: self.vertical.then_some(self.crop_center) }
+                }
+                None => edit::EncodeSpec {
+                    codec: crate::config::Codec::H264,
+                    bitrate_kbps: (self.video_kbps.max(2000) * 7 / 5).min(150_000),
+                    cbr: false,
+                    max_height: None,
+                    vertical: self.vertical.then_some(self.crop_center),
+                },
+            };
+            let (_, (ow, oh)) = edit::plan_frame(self.video_size.0, self.video_size.1, &spec);
+            let est_mb = (f64::from(spec.bitrate_kbps) + f64::from(audio_kbps)) * secs / 8000.0;
+            ui.add_space(6.0);
+            ui.label(theme::caption(format!("About {est_mb:.1} MB  ·  {ow} x {oh}  ·  {}", theme::fmt_short(secs))).color(t.text2));
+            if spec.bitrate_kbps < 800 {
+                ui.label(theme::caption("The selection is long for this size, so the picture will be soft. Trim it shorter for a sharper clip.").color(t.caution));
+            }
+            ui.add_space(8.0);
+            let text = theme::label_with_icon(icons, icon::SHARE, "Export");
+            let b = egui::Button::new(text).min_size(Vec2::new(ui.available_width(), theme::CONTROL_H));
+            if ui.add_enabled(!busy, b).clicked() {
+                let seg = vec![Segment { path: self.path.clone(), start: self.in_point, end: self.out_point }];
+                let suffix = match (small, self.vertical) {
+                    (_, true) => "vertical",
+                    (true, false) => "small",
+                    (false, false) => "export",
+                };
+                let out = edit::edited_name(&self.path, suffix);
+                let mix = Mix {
+                    game: self.game_gain,
+                    mic: self.mic_gain,
+                    // Size targets keep only the mixed track; every bit goes to the picture.
+                    keep_separate: self.keep_separate && !small,
+                    bitrate_kbps: if small { 128 } else { shared.cfg.audio.bitrate_kbps },
+                };
+                let label = format!("Exporting {}", theme::fmt_short(secs));
+                shared.spawn_job(&ctx, JobKind::Export, label, move |p| match edit::export(&seg, &out, &mix, &edit::VideoMode::Encode(spec), p) {
+                    Ok(path) => JobDone::Exported(path),
+                    Err(e) => JobDone::Failed(format!("Export failed: {e}")),
+                });
+            }
+        });
     }
 }
 

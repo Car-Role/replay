@@ -119,8 +119,9 @@ impl Gpu {
     }
 }
 
-/// Converts captured BGRA frames into NV12 encoder surfaces, scaled to fit
-/// the output with black bars when the aspect ratio differs.
+/// Converts captured BGRA frames (or decoded NV12 frames) into NV12 encoder
+/// surfaces, scaled to fit the output with black bars when the aspect ratio
+/// differs.
 pub struct Converter {
     gpu: Arc<Gpu>,
     enumerator: ID3D11VideoProcessorEnumerator,
@@ -128,11 +129,27 @@ pub struct Converter {
     in_size: (u32, u32),
     out_size: (u32, u32),
     outputs: Vec<ID3D11VideoProcessorOutputView>,
-    inputs: Vec<(ID3D11Texture2D, ID3D11VideoProcessorInputView)>,
+    /// Cached input views by (texture, array slice).
+    inputs: Vec<(ID3D11Texture2D, u32, ID3D11VideoProcessorInputView)>,
 }
 
 impl Converter {
     pub fn new(gpu: Arc<Gpu>, in_size: (u32, u32), out_size: (u32, u32), targets: &[ID3D11Texture2D]) -> Result<Self> {
+        Self::with_input(gpu, in_size, out_size, targets, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+    }
+
+    /// For decoded video: input frames are BT.709 studio-range YUV.
+    pub fn for_video(gpu: Arc<Gpu>, in_size: (u32, u32), out_size: (u32, u32), targets: &[ID3D11Texture2D]) -> Result<Self> {
+        Self::with_input(gpu, in_size, out_size, targets, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709)
+    }
+
+    fn with_input(
+        gpu: Arc<Gpu>,
+        in_size: (u32, u32),
+        out_size: (u32, u32),
+        targets: &[ID3D11Texture2D],
+        input_space: DXGI_COLOR_SPACE_TYPE,
+    ) -> Result<Self> {
         unsafe {
             let desc = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
                 InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
@@ -149,7 +166,7 @@ impl Converter {
             let vc = &gpu.video_context;
             vc.VideoProcessorSetStreamFrameFormat(&processor, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
             vc.VideoProcessorSetStreamAutoProcessingMode(&processor, 0, false);
-            vc.VideoProcessorSetStreamColorSpace1(&processor, 0, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+            vc.VideoProcessorSetStreamColorSpace1(&processor, 0, input_space);
             vc.VideoProcessorSetOutputColorSpace1(&processor, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709);
             let black = D3D11_VIDEO_COLOR {
                 Anonymous: D3D11_VIDEO_COLOR_0 { RGBA: D3D11_VIDEO_COLOR_RGBA { R: 0.0, G: 0.0, B: 0.0, A: 1.0 } },
@@ -174,15 +191,15 @@ impl Converter {
         self.in_size
     }
 
-    fn input_view(&mut self, src: &ID3D11Texture2D) -> Result<ID3D11VideoProcessorInputView> {
-        if let Some((_, v)) = self.inputs.iter().find(|(t, _)| t.as_raw() == src.as_raw()) {
+    fn input_view(&mut self, src: &ID3D11Texture2D, slice: u32) -> Result<ID3D11VideoProcessorInputView> {
+        if let Some((_, _, v)) = self.inputs.iter().find(|(t, s, _)| t.as_raw() == src.as_raw() && *s == slice) {
             return Ok(v.clone());
         }
         let desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
             FourCC: 0,
             ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
             Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 {
-                Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: 0 },
+                Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: slice },
             },
         };
         let mut view = None;
@@ -190,17 +207,23 @@ impl Converter {
             self.gpu.video_device.CreateVideoProcessorInputView(src, &self.enumerator, &desc, Some(&mut view))?;
         }
         let view = view.expect("view");
-        // Capture pools rotate a few surfaces; keep a small cache of their views.
-        if self.inputs.len() >= 6 {
+        // Capture pools rotate a few surfaces and decoders a few more; keep
+        // a small cache of their views.
+        if self.inputs.len() >= 24 {
             self.inputs.remove(0);
         }
-        self.inputs.push((src.clone(), view.clone()));
+        self.inputs.push((src.clone(), slice, view.clone()));
         Ok(view)
     }
 
     /// Draws the `crop` rectangle (x, y, w, h) of `src` into output slot `slot`.
     pub fn convert(&mut self, src: &ID3D11Texture2D, crop: (u32, u32, u32, u32), slot: usize) -> Result<()> {
-        let view = self.input_view(src)?;
+        self.convert_slice(src, 0, crop, slot)
+    }
+
+    /// Like `convert`, for one slice of a texture array (decoder output).
+    pub fn convert_slice(&mut self, src: &ID3D11Texture2D, slice: u32, crop: (u32, u32, u32, u32), slot: usize) -> Result<()> {
+        let view = self.input_view(src, slice)?;
         let (cx, cy) = (crop.0 as i32, crop.1 as i32);
         let (cw, ch) = (crop.2.max(1), crop.3.max(1));
         let (ow, oh) = self.out_size;

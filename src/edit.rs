@@ -1,11 +1,16 @@
-//! Clip editing: trim, join and audio remix.
+//! Clip editing: trim, join, audio remix and re-encoded exports.
 //!
-//! Video is copied without re-encoding, so cuts start on the keyframe at or
-//! before the chosen start (recordings have one every 0.5 s). Audio is
-//! decoded, mixed with the chosen volumes and encoded again, which is fast.
+//! By default video is copied without re-encoding, so cuts start on the
+//! keyframe at or before the chosen start (recordings have one every 0.5 s).
+//! `VideoMode::Encode` decodes and encodes the video again on the GPU: for
+//! exact-frame cuts, size targets (Discord) and vertical 9:16 crops. Audio is
+//! always decoded, mixed with the chosen volumes and encoded again.
 
 use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+
+use crate::config::Codec;
 
 use crate::media::{AAC_FRAME, CHANNELS, SAMPLE_RATE, mix_into};
 use crate::sys::aac::AacDecoder;
@@ -29,6 +34,123 @@ pub struct Mix {
     /// Also keep separate Game and Microphone tracks after the mix.
     pub keep_separate: bool,
     pub bitrate_kbps: u32,
+}
+
+/// How the video of an export is made.
+#[derive(Clone, Debug, PartialEq)]
+pub enum VideoMode {
+    /// Copy the compressed video (fast, cuts on keyframes).
+    Copy,
+    /// Decode and encode again.
+    Encode(EncodeSpec),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EncodeSpec {
+    pub codec: Codec,
+    pub bitrate_kbps: u32,
+    /// Constant bitrate, so a size target is met.
+    pub cbr: bool,
+    /// Largest output height; None keeps the source height.
+    pub max_height: Option<u32>,
+    /// Crop to 9:16 for phones. The value is the crop's horizontal centre
+    /// (0 = left edge, 1 = right edge).
+    pub vertical: Option<f32>,
+}
+
+/// Video bitrate and largest height for a file of at most `target_mb`
+/// megabytes (10^6 bytes) and `seconds` long, with `audio_kbps` of audio.
+pub fn size_target(target_mb: f64, seconds: f64, audio_kbps: u32) -> (u32, Option<u32>) {
+    // 10% margin: the encoder overshoots its target by up to about 7%.
+    let total_kbps = target_mb * 8000.0 * 0.90 / seconds.max(0.5);
+    let video = (total_kbps - f64::from(audio_kbps)).max(150.0) as u32;
+    let height = match video {
+        0..=599 => Some(480),
+        600..=1499 => Some(720),
+        1500..=3999 => Some(1080),
+        _ => None,
+    };
+    (video.min(100_000), height)
+}
+
+/// The source rectangle (x, y, w, h) and the output size for a frame of
+/// `src_w` x `src_h`. Sizes are even.
+pub fn plan_frame(src_w: u32, src_h: u32, spec: &EncodeSpec) -> ((u32, u32, u32, u32), (u32, u32)) {
+    let (src_w, src_h) = (src_w.max(2), src_h.max(2));
+    let crop = match spec.vertical {
+        Some(center) => {
+            let w = ((u64::from(src_h) * 9 / 16) as u32).min(src_w) & !1;
+            let x = (center.clamp(0.0, 1.0) * src_w as f32 - w as f32 / 2.0).clamp(0.0, (src_w - w) as f32) as u32 & !1;
+            (x, 0, w, src_h)
+        }
+        None => (0, 0, src_w, src_h),
+    };
+    let max_h = spec.max_height.or(spec.vertical.map(|_| 1920));
+    let (mut ow, mut oh) = (crop.2, crop.3);
+    if let Some(mh) = max_h
+        && oh > mh
+    {
+        ow = (u64::from(ow) * u64::from(mh) / u64::from(oh)) as u32;
+        oh = mh;
+    }
+    (crop, ((ow.max(2)) & !1, (oh.max(2)) & !1))
+}
+
+/// What the user picked for an export.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExportChoice {
+    /// Largest file size in MB (10^6 bytes).
+    pub size_mb: Option<f64>,
+    /// Vertical 9:16 crop centre, 0..1.
+    pub vertical: Option<f32>,
+    /// Output codec; None keeps the source codec.
+    pub codec: Option<Codec>,
+}
+
+/// The encode settings for an export of `seconds` of `source`. `audio_kbps`
+/// is the total bitrate of the audio tracks the export will have.
+pub fn encode_spec(source: &Path, seconds: f64, audio_kbps: u32, c: &ExportChoice) -> Result<EncodeSpec, String> {
+    let m = reader::read(source).map_err(|e| format!("{}: {e}", source.display()))?;
+    let v = m.video().ok_or("the clip has no video")?;
+    let TrackKindIn::Video { codec: src_codec, .. } = v.kind else { unreachable!() };
+    let codec = c.codec.unwrap_or(src_codec);
+    let (bitrate_kbps, max_height, cbr) = match c.size_mb {
+        Some(mb) => {
+            let (k, h) = size_target(mb, seconds, audio_kbps);
+            (k, h, true)
+        }
+        None => {
+            // Same quality as the source; H.264 needs more bits than HEVC or AV1.
+            let mut k = video_kbps(&m).max(2_000);
+            if codec == Codec::H264 && src_codec != Codec::H264 {
+                k = k * 7 / 5;
+            }
+            (k.min(150_000), None, false)
+        }
+    };
+    Ok(EncodeSpec { codec, bitrate_kbps, cbr, max_height, vertical: c.vertical })
+}
+
+/// Average video bitrate of a file, in kbit/s.
+pub fn video_kbps(m: &Mp4In) -> u32 {
+    let Some(v) = m.video() else { return 0 };
+    let bytes: u64 = v.samples.iter().map(|s| u64::from(s.size)).sum();
+    (bytes as f64 * 8.0 / 1000.0 / v.duration_seconds().max(0.1)) as u32
+}
+
+/// Frames per second of a file's video, rounded.
+pub fn video_fps(m: &Mp4In) -> u32 {
+    m.video()
+        .filter(|v| v.samples.len() > 1)
+        .map(|v| ((v.samples.len() - 1) as f64 / (v.seconds(v.samples.len() - 1) - v.seconds(0)).max(0.001)).round() as u32)
+        .unwrap_or(60)
+        .clamp(10, 240)
+}
+
+/// True when the files can be joined without re-encoding.
+pub fn same_video_settings(paths: &[PathBuf]) -> bool {
+    let kinds: Vec<Option<TrackKindIn>> = paths.iter().map(|p| reader::read(p).ok().and_then(|m| m.video().map(|v| v.kind.clone()))).collect();
+    kinds.iter().all(|k| k.is_some() && *k == kinds[0])
 }
 
 /// Game and mic tracks of a file. Files from other programs have one
@@ -95,9 +217,12 @@ fn video_range(v: &TrackIn, start: f64, end: f64) -> (usize, usize) {
 }
 
 /// Writes a new file from the segments. Returns its path.
-pub fn export(segments: &[Segment], out: &Path, mix: &Mix, progress: &(dyn Fn(f32) + Sync)) -> Result<PathBuf, String> {
+pub fn export(segments: &[Segment], out: &Path, mix: &Mix, video: &VideoMode, progress: &(dyn Fn(f32) + Sync)) -> Result<PathBuf, String> {
     if segments.is_empty() {
         return Err("nothing to export".into());
+    }
+    if let VideoMode::Encode(spec) = video {
+        return export_encoded(segments, out, mix, spec, progress);
     }
     let files: Vec<Mp4In> = segments
         .iter()
@@ -155,27 +280,7 @@ pub fn export(segments: &[Segment], out: &Path, mix: &Mix, progress: &(dyn Fn(f3
         progress(0.4 * (si + 1) as f32 / files.len() as f32);
     }
 
-    let mut audio: Vec<AudioTrackData> = Vec::new();
-    let enc = |name: &str, pcm: &[i16]| encode_track(name, pcm, mix.bitrate_kbps);
-    match (&game_pcm, &mic_pcm) {
-        (Some(g), Some(m)) => {
-            let mut mixed = vec![0i16; g.len()];
-            mix_into(&mut mixed, g, 0, mix.game);
-            mix_into(&mut mixed, m, 100, mix.mic);
-            audio.push(enc("Game + Mic", &mixed)?);
-            if mix.keep_separate {
-                audio.push(enc("Game", g)?);
-                audio.push(enc("Microphone", m)?);
-            }
-        }
-        (Some(one), None) | (None, Some(one)) => {
-            let gain = if game_pcm.is_some() { mix.game } else { mix.mic };
-            let mut v = vec![0i16; one.len()];
-            mix_into(&mut v, one, 0, gain);
-            audio.push(enc(if game_pcm.is_some() { "Game" } else { "Microphone" }, &v)?);
-        }
-        (None, None) => {}
-    }
+    let audio = mix_audio(game_pcm, mic_pcm, mix)?;
     progress(0.6);
 
     // Video track from the plan (samples are already in MP4 format).
@@ -216,6 +321,201 @@ pub fn export(segments: &[Segment], out: &Path, mix: &Mix, progress: &(dyn Fn(f3
     Ok(out_path)
 }
 
+/// Decodes the segments' game and mic audio into one timeline each.
+fn decode_segments(files: &[Mp4In], segments: &[Segment], ranges: &[(f64, f64)], progress: &dyn Fn(f32)) -> Result<(Option<Vec<i16>>, Option<Vec<i16>>), String> {
+    let mut handles: Vec<File> = segments.iter().map(|s| File::open(&s.path)).collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+    let total: f64 = ranges.iter().map(|r| r.1).sum();
+    let total_frames = (total * f64::from(SAMPLE_RATE)).round() as usize;
+    let mut game_pcm: Option<Vec<i16>> = None;
+    let mut mic_pcm: Option<Vec<i16>> = None;
+    let mut pos = 0usize;
+    for (si, f) in files.iter().enumerate() {
+        let (t0, len) = ranges[si];
+        let frames = (len * f64::from(SAMPLE_RATE)).round() as usize;
+        let (game, mic) = audio_sources(f);
+        for (src, dst) in [(game, &mut game_pcm), (mic, &mut mic_pcm)] {
+            if let Some(track) = src {
+                let pcm = decode_range(&mut handles[si], track, t0, t0 + len)?;
+                let buf = dst.get_or_insert_with(|| vec![0; total_frames * CHANNELS as usize]);
+                let at = pos * CHANNELS as usize;
+                let n = pcm.len().min(buf.len().saturating_sub(at));
+                buf[at..at + n].copy_from_slice(&pcm[..n]);
+            }
+        }
+        pos += frames;
+        progress((si + 1) as f32 / files.len() as f32);
+    }
+    Ok((game_pcm, mic_pcm))
+}
+
+/// Mixes and encodes the audio tracks of an export.
+fn mix_audio(game_pcm: Option<Vec<i16>>, mic_pcm: Option<Vec<i16>>, mix: &Mix) -> Result<Vec<AudioTrackData>, String> {
+    let mut audio: Vec<AudioTrackData> = Vec::new();
+    let enc = |name: &str, pcm: &[i16]| encode_track(name, pcm, mix.bitrate_kbps);
+    match (&game_pcm, &mic_pcm) {
+        (Some(g), Some(m)) => {
+            let mut mixed = vec![0i16; g.len()];
+            mix_into(&mut mixed, g, 0, mix.game);
+            mix_into(&mut mixed, m, 100, mix.mic);
+            audio.push(enc("Game + Mic", &mixed)?);
+            if mix.keep_separate {
+                audio.push(enc("Game", g)?);
+                audio.push(enc("Microphone", m)?);
+            }
+        }
+        (Some(one), None) | (None, Some(one)) => {
+            let gain = if game_pcm.is_some() { mix.game } else { mix.mic };
+            let mut v = vec![0i16; one.len()];
+            mix_into(&mut v, one, 0, gain);
+            audio.push(enc(if game_pcm.is_some() { "Game" } else { "Microphone" }, &v)?);
+        }
+        (None, None) => {}
+    }
+    Ok(audio)
+}
+
+/// Export with the video decoded and encoded again.
+fn export_encoded(segments: &[Segment], out: &Path, mix: &Mix, spec: &EncodeSpec, progress: &(dyn Fn(f32) + Sync)) -> Result<PathBuf, String> {
+    let files: Vec<Mp4In> = segments
+        .iter()
+        .map(|s| reader::read(&s.path).map_err(|e| format!("{}: {e}", s.path.display())))
+        .collect::<Result<_, _>>()?;
+    let mut pieces = Vec::new();
+    let mut ranges = Vec::new();
+    let mut size = None;
+    for (seg, f) in segments.iter().zip(&files) {
+        let v = f.video().ok_or_else(|| format!("{} has no video", seg.path.display()))?;
+        let TrackKindIn::Video { width, height, .. } = v.kind else { unreachable!() };
+        let dur = v.duration_seconds();
+        let (start, end) = (seg.start.clamp(0.0, dur), seg.end.clamp(0.0, dur));
+        if end - start < 0.05 {
+            continue;
+        }
+        let (crop, out_size) = plan_frame(width, height, spec);
+        // The first clip sets the output size; others are fitted into it.
+        size.get_or_insert(out_size);
+        pieces.push(crate::sys::transcode::Piece { path: seg.path.clone(), start, end, crop });
+        ranges.push((start, end - start));
+    }
+    let (width, height) = size.ok_or("the selection is empty")?;
+    let fps = video_fps(&files[0]);
+
+    // Video first (the slow part), into a temporary file of MP4 samples.
+    let out_path = unique(out);
+    let tmp_path = out_path.with_extension("video.tmp");
+    let mut tmp = std::io::BufWriter::new(File::create(&tmp_path).map_err(|e| format!("cannot write {}: {e}", tmp_path.display()))?);
+    let mut infos: Vec<SampleInfo> = Vec::new();
+    let mut first_key: Option<Vec<u8>> = None;
+    let mut scratch = Vec::new();
+    let job = crate::sys::transcode::Job { pieces, codec: spec.codec, width, height, fps, bitrate_kbps: spec.bitrate_kbps, cbr: spec.cbr };
+    let video_progress = |f: f32| progress(f * 0.85);
+    let to_ts = |t: i64| (t.max(0) as i128 * VIDEO_TIMESCALE as i128 / crate::ring::TICKS_PER_SEC as i128) as u64;
+    let result = crate::sys::transcode::run(&job, &video_progress, &mut |f| {
+        if f.key && first_key.is_none() {
+            first_key = Some(f.data.to_vec());
+        }
+        crate::mux::bitstream::to_mp4_sample(spec.codec, f.data, &mut scratch);
+        tmp.write_all(&scratch).map_err(|e| e.to_string())?;
+        let mut time = to_ts(f.time);
+        if let Some(prev) = infos.last()
+            && time <= prev.time
+        {
+            time = prev.time + 1;
+        }
+        infos.push(SampleInfo { time, duration: 0, size: scratch.len() as u32, key: f.key || infos.is_empty() });
+        Ok(())
+    });
+    let cleanup = || {
+        let _ = std::fs::remove_file(&tmp_path);
+    };
+    let header = match result {
+        Ok(h) => h,
+        Err(e) => {
+            drop(tmp);
+            cleanup();
+            return Err(e);
+        }
+    };
+    if let Err(e) = tmp.flush() {
+        cleanup();
+        return Err(e.to_string());
+    }
+    drop(tmp);
+    if infos.is_empty() {
+        cleanup();
+        return Err("no frames were encoded".into());
+    }
+    let total: f64 = ranges.iter().map(|r| r.1).sum();
+    let end_ts = (total * f64::from(VIDEO_TIMESCALE)).round() as u64;
+    for i in 0..infos.len() {
+        let next = infos.get(i + 1).map(|n| n.time).unwrap_or(end_ts.max(infos[i].time + 1));
+        infos[i].duration = next.saturating_sub(infos[i].time).max(1) as u32;
+    }
+    let params = crate::sys::transcode::params_from(spec.codec, first_key.as_deref(), header.as_deref());
+    let config = match spec.codec {
+        Codec::H264 => crate::mux::bitstream::avcc(&params),
+        Codec::Hevc => crate::mux::bitstream::hvcc(&params),
+        Codec::Av1 => params.sps.first().and_then(|s| crate::mux::bitstream::av1c(s)),
+    };
+    let Some(config) = config else {
+        cleanup();
+        return Err("the encoder did not produce codec headers".into());
+    };
+
+    // Audio.
+    let audio = (|| {
+        let (g, m) = decode_segments(&files, segments, &ranges, &|f| progress(0.85 + 0.05 * f))?;
+        mix_audio(g, m, mix)
+    })();
+    let audio = match audio {
+        Ok(a) => a,
+        Err(e) => {
+            cleanup();
+            return Err(e);
+        }
+    };
+    progress(0.92);
+
+    let mut tracks = vec![Track {
+        kind: TrackKind::Video { codec: spec.codec, width, height, config },
+        timescale: VIDEO_TIMESCALE,
+        samples: infos,
+        start_offset: 0,
+        name: "Video".into(),
+        enabled: true,
+    }];
+    tracks.extend(audio.iter().map(audio_track));
+    let offsets: Vec<u64> = tracks[0].samples.iter().scan(0u64, |o, s| {
+        let at = *o;
+        *o += u64::from(s.size);
+        Some(at)
+    }).collect();
+    let mut src = match File::open(&tmp_path) {
+        Ok(f) => f,
+        Err(e) => {
+            cleanup();
+            return Err(e.to_string());
+        }
+    };
+    let sizes: Vec<u32> = tracks[0].samples.iter().map(|s| s.size).collect();
+    let r = write_tracks(&out_path, &tracks, |t, i, buf| {
+        if t == 0 {
+            src.seek(SeekFrom::Start(offsets[i]))?;
+            let start = buf.len();
+            buf.resize(start + sizes[i] as usize, 0);
+            src.read_exact(&mut buf[start..])?;
+        } else {
+            buf.extend_from_slice(&audio[t - 1].packets[i]);
+        }
+        Ok(())
+    });
+    drop(src);
+    cleanup();
+    r?;
+    progress(1.0);
+    Ok(out_path)
+}
+
 /// `name.mp4` -> `name (2).mp4` when taken.
 pub fn unique(p: &Path) -> PathBuf {
     if !p.exists() {
@@ -246,6 +546,33 @@ mod tests {
             start_offset: 0,
             enabled: true,
         }
+    }
+
+    #[test]
+    fn size_targets_fit_and_scale_down() {
+        let (v, h) = size_target(10.0, 30.0, 128);
+        // 10 MB over 30 s with a 10% margin: 2400 kbit/s in total.
+        assert!((2200..2300).contains(&v), "{v}");
+        assert_eq!(h, Some(1080));
+        assert_eq!(size_target(10.0, 120.0, 128).1, Some(480));
+        assert_eq!(size_target(500.0, 60.0, 128).1, None);
+    }
+
+    #[test]
+    fn vertical_crop_is_9_by_16_and_inside_the_frame() {
+        let spec = EncodeSpec { codec: Codec::H264, bitrate_kbps: 8000, cbr: false, max_height: None, vertical: Some(0.5) };
+        let ((x, y, w, h), out) = plan_frame(1920, 1080, &spec);
+        assert_eq!((w, h), (606, 1080));
+        assert_eq!((x, y), (656, 0));
+        assert_eq!(out, (606, 1080));
+        let left = EncodeSpec { vertical: Some(0.0), ..spec.clone() };
+        assert_eq!(plan_frame(1920, 1080, &left).0.0, 0);
+        let right = EncodeSpec { vertical: Some(1.0), ..spec.clone() };
+        assert_eq!(plan_frame(1920, 1080, &right).0.0, 1920 - 606);
+        // 4K sources are scaled to 1920 high.
+        assert_eq!(plan_frame(3840, 2160, &spec).1, (1078, 1920));
+        let plain = EncodeSpec { vertical: None, max_height: Some(720), ..spec };
+        assert_eq!(plan_frame(1920, 1080, &plain), ((0, 0, 1920, 1080), (1280, 720)));
     }
 
     #[test]

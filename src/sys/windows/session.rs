@@ -87,6 +87,7 @@ impl Session {
             // Keyframes are forced every 0.5 s of real time (see the worker);
             // this GOP is only the fallback for encoders that ignore that.
             gop: (v.fps * 2).max(1),
+            low_latency: true,
         };
         let video = Arc::new(Mutex::new(ring_for(cfg.replay_seconds, v.peak_kbps())));
         let video_state = Arc::new(Mutex::new(VideoState {
@@ -274,6 +275,7 @@ impl VideoWorker {
                     return Err(windows::core::Error::new(hr, "encoder error"));
                 }
                 Msg::Enc(EncoderEvent::NeedInput) => credits += 1,
+                Msg::Enc(EncoderEvent::DrainComplete) => {}
                 Msg::Enc(EncoderEvent::HaveOutput) => {
                     let base = t0.unwrap_or(0);
                     let ring = &self.ring;

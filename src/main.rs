@@ -53,6 +53,11 @@ fn main() {
                 std::process::exit(2);
             }
         }
+        "--export" => {
+            logger::init("probe", false);
+            sys::init_tool();
+            std::process::exit(if export_cli(&args) { 0 } else { 1 });
+        }
         "--trim" | "--join" => {
             logger::init("probe", false);
             sys::init_tool();
@@ -83,6 +88,8 @@ replay --save | --save-all     ask the running recorder to save a replay
 replay --record                start or stop recording the game in front
 replay --trim <file> <a> <b>   save a trimmed copy (seconds)
 replay --join <file>...        join clips with the same video settings
+replay --export <file> <a> <b> [--size MB] [--vertical 0..1] [--codec h264|hevc|av1]
+                               re-encode a part of a clip (exact cut)
 replay --probe                 show capture and encoder support
 replay --detect                show which open windows count as games
 replay --selftest [s] [codec]  record the screen and check the result
@@ -122,6 +129,57 @@ fn check_update_cli(args: &[String]) -> bool {
     }
 }
 
+/// `replay --export <file> <start> <end> [--size MB] [--vertical X] [--codec C]`
+fn export_cli(args: &[String]) -> bool {
+    let (Some(p), Some(a), Some(b)) = (args.get(1), args.get(2), args.get(3)) else {
+        println!("usage: replay --export <file> <start s> <end s> [--size MB] [--vertical 0..1] [--codec h264|hevc|av1]");
+        return false;
+    };
+    let opt = |name: &str| args.iter().position(|x| x == name).and_then(|i| args.get(i + 1)).cloned();
+    let choice = edit::ExportChoice {
+        size_mb: opt("--size").and_then(|v| v.parse().ok()),
+        vertical: opt("--vertical").and_then(|v| v.parse().ok()),
+        codec: opt("--codec").map(|c| match c.as_str() {
+            "h264" => config::Codec::H264,
+            "hevc" => config::Codec::Hevc,
+            _ => config::Codec::Av1,
+        }),
+    };
+    let (start, end) = (a.parse().unwrap_or(0.0), b.parse().unwrap_or(f64::MAX));
+    let cfg = config::Config::load();
+    let small = choice.size_mb.is_some();
+    let audio_kbps = if small { 128 } else { cfg.audio.bitrate_kbps * 3 };
+    let seconds = crate::mux::reader::read(std::path::Path::new(p)).map(|m| m.duration()).unwrap_or(0.0).min(end) - start;
+    let spec = match edit::encode_spec(std::path::Path::new(p), seconds, audio_kbps, &choice) {
+        Ok(s) => s,
+        Err(e) => {
+            println!("FAIL: {e}");
+            return false;
+        }
+    };
+    println!("{spec:?}");
+    let mix = edit::Mix {
+        game: cfg.audio.game_volume,
+        mic: cfg.audio.microphone_volume,
+        keep_separate: !small,
+        bitrate_kbps: if small { 128 } else { cfg.audio.bitrate_kbps },
+    };
+    let seg = vec![edit::Segment { path: p.into(), start, end }];
+    let out = edit::edited_name(std::path::Path::new(p), "export");
+    let t = std::time::Instant::now();
+    match edit::export(&seg, &out, &mix, &edit::VideoMode::Encode(spec), &|_| {}) {
+        Ok(path) => {
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            println!("wrote {} ({:.2} MB) in {} ms", path.display(), size as f64 / 1e6, t.elapsed().as_millis());
+            true
+        }
+        Err(e) => {
+            println!("FAIL: {e}");
+            false
+        }
+    }
+}
+
 fn edit_cli(mode: &str, args: &[String]) -> bool {
     let segments: Vec<edit::Segment> = if mode == "--trim" {
         let (Some(p), Some(a), Some(b)) = (args.get(1), args.get(2), args.get(3)) else {
@@ -137,7 +195,7 @@ fn edit_cli(mode: &str, args: &[String]) -> bool {
     let cfg = config::Config::load();
     let mix = edit::Mix { game: cfg.audio.game_volume, mic: cfg.audio.microphone_volume, keep_separate: true, bitrate_kbps: cfg.audio.bitrate_kbps };
     let t = std::time::Instant::now();
-    match edit::export(&segments, &out, &mix, &|_| {}) {
+    match edit::export(&segments, &out, &mix, &edit::VideoMode::Copy, &|_| {}) {
         Ok(p) => {
             println!("wrote {} in {} ms", p.display(), t.elapsed().as_millis());
             true

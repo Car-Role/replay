@@ -837,9 +837,22 @@ impl LibraryApp {
         let a = &self.shared.cfg.audio;
         let mix = crate::edit::Mix { game: a.game_volume, mic: a.microphone_volume, keep_separate: true, bitrate_kbps: a.bitrate_kbps };
         let label = format!("Joining {} clips", segments.len());
-        self.shared.spawn_job(ctx, JobKind::Export, label, move |p| match crate::edit::export(&segments, &out, &mix, p) {
-            Ok(path) => JobDone::Exported(path),
-            Err(e) => JobDone::Failed(format!("Join failed: {e}")),
+        let total: f64 = list.iter().map(|c| c.duration).sum();
+        self.shared.spawn_job(ctx, JobKind::Export, label, move |p| {
+            // Clips with different video settings are encoded again.
+            let paths: Vec<PathBuf> = segments.iter().map(|s| s.path.clone()).collect();
+            let video = if crate::edit::same_video_settings(&paths) {
+                crate::edit::VideoMode::Copy
+            } else {
+                match crate::edit::encode_spec(&paths[0], total, mix.bitrate_kbps * 3, &crate::edit::ExportChoice::default()) {
+                    Ok(s) => crate::edit::VideoMode::Encode(s),
+                    Err(e) => return JobDone::Failed(format!("Join failed: {e}")),
+                }
+            };
+            match crate::edit::export(&segments, &out, &mix, &video, p) {
+                Ok(path) => JobDone::Exported(path),
+                Err(e) => JobDone::Failed(format!("Join failed: {e}")),
+            }
         });
         self.checked.clear();
     }

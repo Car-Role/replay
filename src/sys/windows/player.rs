@@ -38,7 +38,7 @@ pub struct VideoDecoder {
 
 const MAX_PREVIEW_WIDTH: u32 = 1280;
 
-fn propvariant_i64(v: i64) -> ManuallyDrop<PROPVARIANT> {
+pub(crate) fn propvariant_i64(v: i64) -> ManuallyDrop<PROPVARIANT> {
     ManuallyDrop::new(PROPVARIANT {
         Anonymous: PROPVARIANT_0 {
             Anonymous: ManuallyDrop::new(PROPVARIANT_0_0 {

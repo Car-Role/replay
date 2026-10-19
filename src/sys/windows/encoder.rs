@@ -26,12 +26,17 @@ pub struct EncoderSettings {
     pub peak_bitrate: u32,
     pub rate_control: RateControl,
     pub gop: u32,
+    /// True for live recording (output right away); false for exports,
+    /// where the encoder may look ahead for better quality.
+    pub low_latency: bool,
 }
 
 #[derive(Debug)]
 pub enum EncoderEvent {
     NeedInput,
     HaveOutput,
+    /// Every frame given before `drain` has been output.
+    DrainComplete,
     Error(HRESULT),
 }
 
@@ -168,6 +173,7 @@ impl IMFAsyncCallback_Impl for EventPump_Impl {
         match kind {
             k if k == METransformNeedInput.0 as u32 => (self.sink)(EncoderEvent::NeedInput),
             k if k == METransformHaveOutput.0 as u32 => (self.sink)(EncoderEvent::HaveOutput),
+            k if k == METransformDrainComplete.0 as u32 => (self.sink)(EncoderEvent::DrainComplete),
             k if k == MEError.0 as u32 => {
                 let status = unsafe { event.GetStatus().unwrap_or(E_FAIL) };
                 (self.sink)(EncoderEvent::Error(status));
@@ -215,7 +221,9 @@ impl VideoEncoder {
             let mft: IMFTransform = act.ActivateObject()?;
             let attrs = mft.GetAttributes()?;
             attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)?;
-            let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
+            if s.low_latency {
+                let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
+            }
             mft.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, gpu.manager.as_raw() as usize)?;
 
             // Rate control and GOP must be set before the media types on some encoders.
@@ -234,9 +242,10 @@ impl VideoEncoder {
                 set(&CODECAPI_AVEncCommonMaxBitRate, variant_u32(s.peak_bitrate), "max bitrate");
                 set(&CODECAPI_AVEncMPVGOPSize, variant_u32(s.gop), "GOP");
                 set(&CODECAPI_AVEncMPVDefaultBPictureCount, variant_u32(0), "B-frames");
-                set(&CODECAPI_AVLowLatencyMode, variant_bool(true), "low latency");
-                // 0 = fastest, 100 = best. NVENC presets are cheap; favor quality a bit.
-                set(&CODECAPI_AVEncCommonQualityVsSpeed, variant_u32(60), "quality vs speed");
+                set(&CODECAPI_AVLowLatencyMode, variant_bool(s.low_latency), "low latency");
+                // 0 = fastest, 100 = best. NVENC presets are cheap; favor quality a bit
+                // while recording, and more for exports.
+                set(&CODECAPI_AVEncCommonQualityVsSpeed, variant_u32(if s.low_latency { 60 } else { 90 }), "quality vs speed");
             }
 
             let out = MFCreateMediaType()?;
@@ -303,6 +312,11 @@ impl VideoEncoder {
             Some(api) => unsafe { api.SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &variant_u32(1)).is_ok() },
             None => false,
         }
+    }
+
+    /// Asks for every pending frame; a DrainComplete event follows.
+    pub fn drain(&self) -> Result<()> {
+        unsafe { self.mft.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0) }
     }
 
     /// Call only after a NeedInput event.
