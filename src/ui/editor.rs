@@ -131,6 +131,12 @@ pub struct Editor {
     /// Height of the pinned save footer, measured last frame. The scroll area
     /// above gives up this much, so the card never grows past the video.
     footer_h: f32,
+    /// The size warning showed last frame.
+    warned: bool,
+    /// The warning just appeared: scroll Save as into view once.
+    reveal_save: bool,
+    /// The warning just appeared on an untrimmed clip: fold Trim once.
+    fold_trim: bool,
     /// Peak level (0..1) per slice of the clip, for the waveform strip.
     waveform: Vec<f32>,
     /// The name while it is being edited in the command bar.
@@ -229,6 +235,9 @@ impl Editor {
             film_rx,
             film: (0..THUMBS).map(|_| None).collect(),
             footer_h: 112.0,
+            warned: false,
+            reveal_save: false,
+            fold_trim: false,
             waveform: Vec::new(),
             name_edit: None,
             codec,
@@ -932,6 +941,10 @@ impl Editor {
                 ui.set_width(ui.available_width());
                 ui.set_min_height(ui.available_height());
                 let footer_h = self.footer_h;
+                // A faint scroll thumb whenever something is out of view.
+                ui.spacing_mut().scroll.dormant_handle_opacity = 0.6;
+                // Its own 12 px lane, so the thumb never sits on a control.
+                ui.spacing_mut().scroll.floating_allocated_width = 12.0;
                 let out = egui::ScrollArea::vertical()
                     .id_salt("inspector")
                     .auto_shrink([false, false])
@@ -940,6 +953,11 @@ impl Editor {
                     .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 8.0;
 
+                    if std::mem::take(&mut self.fold_trim) {
+                        // Nothing trimmed yet: Trim folds so Size, Shape and the warning fit together.
+                        let id = ui.id().with(("section", "Trim"));
+                        ui.data_mut(|d| d.insert_temp(id, false));
+                    }
                     section(ui, t, "Trim", true, |ui| {
                         ui.columns(3, |cols| {
                             for (col, (k, v)) in cols.iter_mut().zip([("Start", self.in_point), ("End", self.out_point), ("Length", self.out_point - self.in_point)]) {
@@ -998,9 +1016,18 @@ impl Editor {
                         }
                     });
 
+                    let top = ui.cursor().top();
                     section(ui, t, "Save as", true, |ui| {
                         self.save_options(ui, t);
                     });
+                    if std::mem::take(&mut self.reveal_save) {
+                        // The warning depends on Size and Shape: keep them beside it.
+                        // Only when it does not fit: its header goes to the top edge.
+                        let r = Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
+                        if r.bottom() > ui.clip_rect().bottom() {
+                            ui.scroll_to_rect(r, Some(egui::Align::TOP));
+                        }
+                    }
 
                     section(ui, t, "Details", false, |ui| {
                         egui::Grid::new("details").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
@@ -1025,7 +1052,7 @@ impl Editor {
                         }
                     });
                     ui.add_space(4.0);
-                    ui.label(theme::caption("Space play  \u{00b7}  I / O start and end  \u{00b7}  \u{2190} \u{2192} frame  \u{00b7}  Shift 1 s").color(t.text3));
+                    ui.label(theme::caption("Space play  \u{00b7}  I / O start and end\n\u{2190} \u{2192} frame  \u{00b7}  Shift 1 s").color(t.text3));
                 });
                 // More below: fade the last 12 px into the panel.
                 if out.state.offset().y + out.inner_rect.height() < out.content_size.y - 1.0 {
@@ -1038,12 +1065,20 @@ impl Editor {
                 }
                 // Pinned footer: what comes out, and the button that saves it.
                 let start = ui.cursor().top();
-                let (d, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 9.0), Sense::hover());
-                ui.painter().line_segment([Pos2::new(d.left() - 16.0, d.center().y), Pos2::new(d.right() + 16.0, d.center().y)], Stroke::new(1.0, t.divider));
-                self.save_footer(ui, t, icons, shared, busy);
+                // The footer keeps the same right edge as the controls above,
+                // which leave a 12 px lane for the scroll thumb.
+                let size = Vec2::new(ui.available_width() - 12.0, ui.available_height());
+                let end = ui
+                    .allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Min), |ui| {
+                        let (d, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 9.0), Sense::hover());
+                        ui.painter().line_segment([Pos2::new(d.left() - 16.0, d.center().y), Pos2::new(d.right() + 28.0, d.center().y)], Stroke::new(1.0, t.divider));
+                        self.save_footer(ui, t, icons, shared, busy);
+                        ui.cursor().top()
+                    })
+                    .inner;
                 // A warning makes the footer taller: take the room from the
                 // scroll area next frame, so the card keeps its bottom edge.
-                let need = (ui.cursor().top() - start + ui.spacing().item_spacing.y).max(112.0);
+                let need = (end - start + ui.spacing().item_spacing.y).max(112.0);
                 if (need - self.footer_h).abs() > 0.5 {
                     self.footer_h = need;
                     ui.ctx().request_discard("inspector footer height");
@@ -1133,6 +1168,16 @@ impl Editor {
         ui.label(theme::caption(line).color(t.text2));
         // Always one note line, so the button never moves.
         let soft = !copy && spec.bitrate_kbps < 800;
+        if soft && !self.warned {
+            let untrimmed = self.in_point <= 0.01 && self.out_point >= self.duration - 0.01;
+            if untrimmed {
+                self.fold_trim = true;
+            } else {
+                self.reveal_save = true;
+            }
+            ui.ctx().request_repaint();
+        }
+        self.warned = soft;
         let (note, color) = if soft {
             {
             // The estimate line above already shows the output size.
@@ -1141,14 +1186,14 @@ impl Editor {
             (format!("{} is long for {mb:.0} MB, so it may look soft.{tail}", theme::fmt_short(secs)), t.text)
         }
         } else if !copy {
-            ("Encoded as H.264, so it plays on every phone and site.".to_string(), t.text3)
+            ("Encoded as H.264, so it plays everywhere.".to_string(), t.text3)
         } else if self.exact {
             (format!("Encoded again as {} to cut on the exact frame.", self.codec), t.text3)
         } else {
             (format!("Copied as {}, so nothing is lost.", self.codec), t.text3)
         };
         if soft {
-            let fix = matches!(self.preset, Preset::Discord10).then_some("Use 50 MB instead");
+            let fix = matches!(self.preset, Preset::Discord10).then_some("Use 50 MB");
             if theme::caution(ui, &t, icons, &note, fix) {
                 self.preset = Preset::Discord50;
             }

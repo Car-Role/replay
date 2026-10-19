@@ -1012,7 +1012,7 @@ impl LibraryApp {
                 let size = m.size_mb.unwrap_or(limit);
                 let h = crate::edit::size_target(f64::from(size), total, 128).1.unwrap_or(1080);
                 let text = format!("{} is long for {size} MB, so it is saved at {h}p and may look soft.", theme::fmt_short(total));
-                let fix = (size < 50).then_some("Use 50 MB instead");
+                let fix = (size < 50).then_some("Use 50 MB");
                 let text = if fix.is_some() { text } else { format!("{text} Pick fewer clips.") };
                 if theme::caution(ui, t, icons, &text, fix) {
                     m.size_mb = Some(50);

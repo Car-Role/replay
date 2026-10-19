@@ -691,7 +691,7 @@ pub fn idea_chip(ui: &mut Ui, t: &Tokens, tag: &str) -> Response {
 
 /// A caution InfoBar (Fluent pattern): a tinted bar, the warning glyph in the
 /// caution color and the sentence in primary text, full width. An optional
-/// action sits under the sentence; returns true when it is clicked.
+/// action sits at the right end, centred on the text; returns true when clicked.
 pub fn caution(ui: &mut Ui, t: &Tokens, icons: bool, text: &str, action: Option<&str>) -> bool {
     let mut clicked = false;
     egui::Frame::new()
@@ -700,28 +700,34 @@ pub fn caution(ui: &mut Ui, t: &Tokens, icons: bool, text: &str, action: Option<
         .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                if icons {
-                    ui.label(glyph(icon::WARNING, 16.0).color(t.caution));
-                }
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 8.0;
-                    ui.add(egui::Label::new(caption(text).color(t.text)).wrap());
-                    if let Some(a) = action {
-                        // A small standard button on the text column: primary
-                        // text on a control fill, so it passes 4.5:1 on the tint.
-                        let b = egui::Button::new(caption(a).color(t.text))
-                            .fill(argb(0x0FFF_FFFF))
-                            .stroke(Stroke::new(1.0, argb(0x24FF_FFFF)))
-                            .corner_radius(CornerRadius::same(R_CONTROL))
-                            .min_size(Vec2::new(0.0, 24.0));
-                        let r = ui.add(b);
-                        focus_ring(ui, t, &r, r.rect, f32::from(R_CONTROL));
-                        clicked = r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
-                    }
-                });
-            });
+            // Laid out by hand: the sentence wraps beside the button, the
+            // glyph sits on its first line and the button is centred.
+            let font = FontId::proportional(12.0);
+            let gw = if icons { 16.0 + 8.0 } else { 0.0 };
+            let bw = action.map_or(0.0, |a| ui.painter().layout_no_wrap(a.to_string(), font.clone(), t.text).size().x + 24.0 + 12.0);
+            let tw = (ui.available_width() - gw - bw).max(80.0);
+            let galley = ui.painter().layout(text.to_string(), font, t.text, tw);
+            let line_h = galley.rows.first().map_or(16.0, |r| r.height());
+            let h = galley.size().y.max(if action.is_some() { 24.0 } else { 0.0 });
+            let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::hover());
+            let text_top = row.top() + (h - galley.size().y) / 2.0;
+            if icons {
+                let c = egui::Pos2::new(row.left() + 8.0, text_top + line_h / 2.0);
+                ui.painter().text(c, egui::Align2::CENTER_CENTER, icon::WARNING, FontId::new(16.0, FontFamily::Name(ICONS.into())), t.caution);
+            }
+            ui.painter().galley(egui::Pos2::new(row.left() + gw, text_top), galley, t.text);
+            if let Some(a) = action {
+                // A small standard button: primary text on a control fill,
+                // so it passes 4.5:1 on the tint.
+                let br = egui::Rect::from_min_size(egui::Pos2::new(row.right() - bw + 12.0, row.center().y - 12.0), Vec2::new(bw - 12.0, 24.0));
+                let b = egui::Button::new(caption(a).color(t.text))
+                    .fill(argb(0x0FFF_FFFF))
+                    .stroke(Stroke::new(1.0, argb(0x24FF_FFFF)))
+                    .corner_radius(CornerRadius::same(R_CONTROL));
+                let r = ui.put(br, b);
+                focus_ring(ui, t, &r, r.rect, f32::from(R_CONTROL));
+                clicked = r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+            }
         });
     clicked
 }
