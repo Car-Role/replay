@@ -4,6 +4,9 @@ Instant replay for Windows games, in the style of NVIDIA ShadowPlay, written in 
 Replay keeps the last minutes of every running game in memory. Press a hotkey and it saves a clip.
 It finds games by itself and can record several games at the same time.
 
+> **Status:** Windows works today; build it from source (see below). macOS and Linux
+> support is in progress and not usable yet. Ready-made downloads come with the first release.
+
 ## Features
 
 - **Hardware encoding on the GPU.** Frames go from the game window to NVENC without passing through the CPU.
