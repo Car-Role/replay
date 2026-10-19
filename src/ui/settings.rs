@@ -48,6 +48,14 @@ impl SettingsPage {
         }
     }
 
+    /// Starts again from a saved config (after another page changed it).
+    pub fn reset(&mut self, cfg: &Config) {
+        let mics = std::mem::take(&mut self.mics);
+        let encoders = std::mem::take(&mut self.encoders);
+        let update = self.update.clone();
+        *self = Self { mics, encoders, update, ..Self::new(cfg) };
+    }
+
     /// Returns true when the clips folder changed (the list must rescan).
     pub fn ui(&mut self, ui: &mut egui::Ui, shared: &mut Shared) -> bool {
         let t = theme::tokens(ui.ctx());

@@ -3,6 +3,7 @@
 mod clip;
 mod config;
 mod edit;
+mod games;
 mod hotkey;
 mod ipc;
 mod logger;
@@ -30,15 +31,15 @@ fn main() {
         args.drain(..args.len().min(2));
     }
     let mode = args.first().map(String::as_str).unwrap_or("");
-    let text_mode = mode.starts_with("--") && !matches!(mode, "--library" | "--settings" | "--save" | "--save-all");
+    let text_mode = mode.starts_with("--") && !matches!(mode, "--library" | "--settings" | "--games" | "--save" | "--save-all");
     sys::cli::prepare(text_mode);
     update::finish_pending();
 
     match mode {
-        "--library" | "--settings" => {
+        "--library" | "--settings" | "--games" => {
             logger::init("library", cfg!(debug_assertions));
             sys::init_ui();
-            ui::run(args.get(1).map(std::path::PathBuf::from), mode == "--settings");
+            ui::run(args.get(1).map(std::path::PathBuf::from), mode.trim_start_matches("--"));
         }
         "--save" | "--save-all" => {
             if !sys::cli::send_save(mode == "--save-all") {

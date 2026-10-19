@@ -174,6 +174,9 @@ pub mod icon {
     pub const INFO: char = '\u{E946}';
     pub const ERROR: char = '\u{E783}';
     pub const CLOCK: char = '\u{E823}';
+    pub const ADD: char = '\u{E710}';
+    pub const RECORD: char = '\u{E7C8}';
+    pub const CANCEL: char = '\u{E711}';
 }
 
 /// Loads Segoe UI (regular and semibold) and Segoe Fluent Icons on Windows,

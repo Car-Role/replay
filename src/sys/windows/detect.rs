@@ -130,6 +130,20 @@ pub enum Reason {
     Fullscreen,
 }
 
+impl Reason {
+    /// How the game was found, in words for the Games page.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Reason::UserList => "Added by you",
+            Reason::KnownGame => "Known game",
+            Reason::Launcher => "Started by a game launcher",
+            Reason::Library => "In a game library folder",
+            Reason::GameBar => "On the Windows Game Bar list",
+            Reason::Fullscreen => "Fullscreen 3D app",
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ProcInfo {
     path: String,
@@ -410,7 +424,7 @@ pub fn monitor_size(hwnd: isize) -> (u32, u32) {
     }
 }
 
-fn process_path(pid: u32) -> Option<String> {
+pub fn process_path(pid: u32) -> Option<String> {
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; MAX_PATH as usize * 2];

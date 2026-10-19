@@ -105,6 +105,8 @@ struct App {
     hook: HWINEVENTHOOK,
     /// Foreground window and rectangle at the last check, to skip repeat work.
     last_checked: Option<(isize, windows::Win32::Foundation::RECT)>,
+    /// Executables last published as "recording" in games.json.
+    published: RefCell<Vec<String>>,
     /// Hotkeys another program held at the last attempt; retried on the timer.
     hotkeys_missing: bool,
     next_update_check: Instant,
@@ -194,6 +196,7 @@ pub fn run() -> windows::core::Result<()> {
             last_clip: None,
             hook,
             last_checked: None,
+            published: RefCell::new(Vec::new()),
             hotkeys_missing: false,
             next_update_check: Instant::now() + FIRST_UPDATE_CHECK,
             update_checking: false,
@@ -501,6 +504,7 @@ impl App {
         let (mw, mh) = crate::detect::monitor_size(game.hwnd);
         let out = self.cfg.video.resolution.output_size(mw, mh);
         log::info!("detected {} ({}) by {reason:?}", game.name, game.exe);
+        crate::games::note_detected(&game.exe, &game.name, &crate::detect::process_path(game.pid).unwrap_or_default(), reason.describe());
         let hwnd_app = self.hwnd.0 as isize;
         let target = crate::capture::Target::Window(game.hwnd);
         let session = Session::start(gpu, game, target, &self.cfg, out, move |pid, end| post(hwnd_app, WM_APP_SESSION_END, pid as usize, end));
@@ -633,6 +637,12 @@ impl App {
     }
 
     fn update_tray(&self) {
+        let mut exes: Vec<String> = self.running().map(|s| s.game.exe.clone()).collect();
+        exes.sort();
+        if *self.published.borrow() != exes {
+            crate::games::note_recording(&exes);
+            *self.published.borrow_mut() = exes;
+        }
         let names: Vec<&str> = self.running().map(|s| s.game.name.as_str()).collect();
         let (icon, tip) = if names.is_empty() {
             (self.icons.idle, if self.paused { "Replay: paused".to_string() } else { "Replay: waiting for a game".to_string() })
@@ -863,6 +873,18 @@ impl App {
         self.detector.set_config(self.cfg.detection.clone());
         if old.hotkeys != self.cfg.hotkeys {
             self.register_hotkeys(true);
+        }
+        if old.detection != self.cfg.detection {
+            // Stop games the user turned off; look again for games turned on.
+            for s in self.sessions.iter_mut().filter(|s| s.is_running()) {
+                if !crate::games::is_enabled(&self.cfg.detection, &s.game.exe) {
+                    log::info!("{} turned off; recording stopped", s.game.name);
+                    s.stop();
+                }
+            }
+            self.stopped_by_user.clear();
+            self.last_checked = None;
+            self.scan_all_windows();
         }
         let restart = old.video != self.cfg.video || old.replay_seconds != self.cfg.replay_seconds || old.audio != self.cfg.audio;
         if restart {

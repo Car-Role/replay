@@ -5,6 +5,7 @@
 
 mod editor;
 mod filmstrip;
+mod games_page;
 mod settings;
 mod theme;
 
@@ -22,7 +23,8 @@ use crate::config::Config;
 use editor::Editor;
 use theme::{Tokens, icon};
 
-pub fn run(open: Option<PathBuf>, settings: bool) {
+pub fn run(open: Option<PathBuf>, start: &str) {
+    let start = start.to_string();
     let icon = egui::IconData { rgba: include_bytes!("../../assets/generated/icon-64.rgba").to_vec(), width: 64, height: 64 };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -32,7 +34,7 @@ pub fn run(open: Option<PathBuf>, settings: bool) {
             .with_icon(Arc::new(icon)),
         ..Default::default()
     };
-    if let Err(e) = eframe::run_native("Replay", options, Box::new(move |cc| Ok(Box::new(LibraryApp::new(cc, open, settings))))) {
+    if let Err(e) = eframe::run_native("Replay", options, Box::new(move |cc| Ok(Box::new(LibraryApp::new(cc, open, &start))))) {
         log::error!("library window failed: {e}");
     }
 }
@@ -41,6 +43,7 @@ pub fn run(open: Option<PathBuf>, settings: bool) {
 enum Page {
     Clips,
     Editor,
+    Games,
     Settings,
 }
 
@@ -170,10 +173,11 @@ pub struct LibraryApp {
     logo: TextureHandle,
     recorder_running: bool,
     recorder_checked: Instant,
+    games: crate::games::GameDb,
 }
 
 impl LibraryApp {
-    fn new(cc: &eframe::CreationContext, open: Option<PathBuf>, settings: bool) -> Self {
+    fn new(cc: &eframe::CreationContext, open: Option<PathBuf>, start: &str) -> Self {
         let ctx = cc.egui_ctx.clone();
         let icons = theme::install_fonts(&ctx);
         theme::apply(&ctx);
@@ -200,7 +204,11 @@ impl LibraryApp {
         let logo_img = egui::ColorImage::from_rgba_unmultiplied([64, 64], include_bytes!("../../assets/generated/icon-64.rgba"));
         let logo = ctx.load_texture("logo", logo_img, egui::TextureOptions::LINEAR);
         let mut app = Self {
-            page: if settings { Page::Settings } else { Page::Clips },
+            page: match start {
+                "settings" => Page::Settings,
+                "games" => Page::Games,
+                _ => Page::Clips,
+            },
             settings: settings::SettingsPage::new(&cfg),
             shared: Shared { cfg, jobs: Vec::new(), job_tx, next_job: 0, uploads, icons, toast: None },
             job_rx,
@@ -218,6 +226,7 @@ impl LibraryApp {
             logo,
             recorder_running: crate::sys::shell::recorder_running(),
             recorder_checked: Instant::now(),
+            games: crate::games::GameDb::load(),
         };
         app.rescan(&ctx);
         if let Some(p) = open.filter(|p| p.exists()) {
@@ -262,6 +271,9 @@ impl LibraryApp {
         if self.recorder_checked.elapsed() > Duration::from_secs(2) {
             self.recorder_running = crate::sys::shell::recorder_running();
             self.recorder_checked = Instant::now();
+            self.games = crate::games::GameDb::load();
+            // Keep "Recording now" and the capture button current.
+            ctx.request_repaint_after(Duration::from_secs(2));
         }
         while let Ok((p, w, h, px)) = self.thumb_rx.try_recv() {
             let img = egui::ColorImage::from_rgba_unmultiplied([w, h], &px);
@@ -318,34 +330,84 @@ impl LibraryApp {
         if self.editor.is_some() && theme::nav_item(ui, t, icons, icon::CUT, "Editor", self.page == Page::Editor).clicked() {
             self.page = Page::Editor;
         }
-        // Bottom of the rail: settings and recorder status, pinned to the window's bottom edge.
+        if theme::nav_item(ui, t, icons, icon::GAME, "Games", self.page == Page::Games).clicked() {
+            self.page = Page::Games;
+        }
+        // Bottom of the rail, top to bottom: capture button, Settings, recorder
+        // status. Pinned to the window's bottom edge.
         let bottom = ui.ctx().content_rect().bottom();
         let r = ui.max_rect();
-        let area = egui::Rect::from_min_max(egui::pos2(r.left(), bottom - 140.0), egui::pos2(r.right(), bottom));
-        let mut bottom_ui = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::bottom_up(egui::Align::Min)));
+        let area = egui::Rect::from_min_max(egui::pos2(r.left(), bottom - 236.0), egui::pos2(r.right(), bottom - 8.0));
+        let mut bottom_ui = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
         bottom_ui.spacing_mut().item_spacing.y = 4.0;
         bottom_ui.scope(|ui| {
-            ui.add_space(10.0);
-            egui::Frame::new().inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        let (r, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-                        let c = if self.recorder_running { t.success } else { t.text3 };
-                        ui.painter().circle_filled(r.center(), 4.0, c);
-                        ui.label(theme::caption(if self.recorder_running { "Recorder on" } else { "Recorder off" }).color(t.text2));
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                egui::Frame::new().inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            let (r, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                            let c = if self.recorder_running { t.success } else { t.text3 };
+                            ui.painter().circle_filled(r.center(), 4.0, c);
+                            ui.label(theme::caption(if self.recorder_running { "Recorder on" } else { "Recorder off" }).color(t.text2));
+                        });
+                        if !self.recorder_running
+                            && ui.add(egui::Button::new(theme::caption("Start recorder")).min_size(Vec2::new(0.0, 28.0))).clicked()
+                            && let Ok(exe) = std::env::current_exe()
+                        {
+                            let _ = std::process::Command::new(exe).spawn();
+                            self.recorder_checked = Instant::now() - Duration::from_secs(1);
+                        }
                     });
-                    if !self.recorder_running
-                        && ui.add(egui::Button::new(theme::caption("Start recorder")).min_size(Vec2::new(0.0, 28.0))).clicked()
-                        && let Ok(exe) = std::env::current_exe()
-                    {
-                        let _ = std::process::Command::new(exe).spawn();
-                        self.recorder_checked = Instant::now() - Duration::from_secs(1);
-                    }
+                });
+                if theme::nav_item(ui, t, icons, icon::SETTINGS, "Settings", self.page == Page::Settings).clicked() {
+                    self.page = Page::Settings;
+                }
+                ui.add_space(8.0);
+                // The capture block lays out top-down inside its own area.
+                let rest = ui.available_rect_before_wrap();
+                let mut cap = ui.new_child(egui::UiBuilder::new().max_rect(rest).layout(egui::Layout::bottom_up(egui::Align::Min)));
+                cap.scope(|ui| {
+                    let block = egui::Rect::from_min_max(egui::pos2(rest.left(), rest.bottom() - 92.0), rest.max);
+                    let mut b = ui.new_child(egui::UiBuilder::new().max_rect(block).layout(egui::Layout::top_down(egui::Align::Min)));
+                    self.capture_button(&mut b, t);
                 });
             });
-            if theme::nav_item(ui, t, icons, icon::SETTINGS, "Settings", self.page == Page::Settings).clicked() {
-                self.page = Page::Settings;
-            }
+        });
+    }
+
+    /// The capture button: saves a replay of the game being recorded, the
+    /// same as pressing the hotkey.
+    fn capture_button(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        let icons = self.shared.icons;
+        let recording: Vec<String> = self.games.games.iter().filter(|g| g.recording).map(|g| g.name.clone()).collect();
+        let can = self.recorder_running && !recording.is_empty();
+        egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
+            ui.vertical(|ui| {
+                let w = ui.available_width();
+                let text = theme::label_with_icon(icons, icon::RECORD, "Save replay").color(if can { t.on_accent } else { t.text_disabled });
+                let b = egui::Button::new(text).fill(if can { t.accent } else { t.control }).stroke(Stroke::NONE).min_size(Vec2::new(w, 40.0));
+                let hint = if !self.recorder_running {
+                    "The recorder is off".to_string()
+                } else if recording.is_empty() {
+                    "No game is being recorded".to_string()
+                } else {
+                    format!("Save the last {} of {}", theme::fmt_short(f64::from(self.shared.cfg.replay_seconds)), recording.join(", "))
+                };
+                let resp = ui.add_enabled(can, b).on_hover_text(&hint).on_disabled_hover_text(&hint);
+                if resp.clicked() {
+                    if crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::Save(false)) {
+                        self.shared.toast("Saving the replay...", false);
+                    } else {
+                        self.shared.toast("The recorder is not running.", true);
+                    }
+                }
+                let sub = if can { format!("{}  ·  {}", recording.join(", "), self.shared.cfg.hotkeys.save_focused) } else { hint };
+                ui.add(egui::Label::new(theme::caption(sub).color(t.text3)).truncate());
+                if recording.len() > 1 && ui.add(egui::Button::new(theme::caption("Save all games")).frame_when_inactive(false)).clicked() {
+                    crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::Save(true));
+                    self.shared.toast("Saving replays of all games...", false);
+                }
+            });
         });
     }
 
@@ -614,7 +676,8 @@ impl LibraryApp {
                             }
                             ui.add(egui::Label::new(RichText::new(text).color(t.text)).wrap());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                                if theme::subtle(ui, RichText::new("✕").size(12.0)).clicked() {
+                                let x = if icons { theme::glyph(icon::CANCEL, 10.0) } else { RichText::new("x").size(12.0) };
+                                if theme::subtle(ui, x).clicked() {
                                     close = true;
                                 }
                             });
@@ -739,6 +802,7 @@ impl eframe::App for LibraryApp {
                     },
                     None => self.page = Page::Clips,
                 },
+                Page::Games => self.games_page(&mut page_ui, &t),
                 Page::Settings => {
                     if self.settings.ui(&mut page_ui, &mut self.shared) {
                         self.rescan(&ctx);
