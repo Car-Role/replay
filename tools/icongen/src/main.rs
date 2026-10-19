@@ -1,7 +1,7 @@
 //! Renders `assets/icon.svg` and `assets/icon-recording.svg` into:
 //! - `assets/generated/replay.ico` and `replay-recording.ico` (Windows exe and tray),
 //! - `assets/generated/png/icon_<size>.png` (macOS iconset, Linux hicolor),
-//! - `assets/generated/icon-64.rgba` (window icon, raw RGBA).
+//! - `assets/generated/icon-64.rgba` and `icon-recording-64.rgba` (window and tray icons, raw RGBA).
 //!
 //! Run from the repo root: `cargo run -p icongen --release`.
 
@@ -51,5 +51,6 @@ fn main() {
         render(&main_svg, size).save_png(out.join("png").join(format!("icon_{size}.png"))).expect("png");
     }
     fs::write(out.join("icon-64.rgba"), straight_rgba(&render(&main_svg, 64))).expect("rgba");
+    fs::write(out.join("icon-recording-64.rgba"), straight_rgba(&render(&rec_svg, 64))).expect("rgba");
     println!("icons written to {}", out.display());
 }
