@@ -13,6 +13,8 @@ pub enum RecorderMsg {
     Save(bool),
     /// Open the library window (a second start of the recorder).
     Show,
+    /// Start or stop recording the game in front.
+    Record,
 }
 
 impl RecorderMsg {
@@ -24,6 +26,7 @@ impl RecorderMsg {
             RecorderMsg::Save(false) => "save",
             RecorderMsg::Save(true) => "save-all",
             RecorderMsg::Show => "show",
+            RecorderMsg::Record => "record",
         }
     }
 
@@ -35,6 +38,7 @@ impl RecorderMsg {
             "save" => RecorderMsg::Save(false),
             "save-all" => RecorderMsg::Save(true),
             "show" => RecorderMsg::Show,
+            "record" => RecorderMsg::Record,
             _ => return None,
         })
     }
@@ -53,6 +57,7 @@ mod tests {
             RecorderMsg::Save(false),
             RecorderMsg::Save(true),
             RecorderMsg::Show,
+            RecorderMsg::Record,
         ] {
             assert_eq!(RecorderMsg::from_line(m.to_line()), Some(m));
         }

@@ -4,7 +4,7 @@
 //! and the file plays while it streams. Samples are interleaved in 0.5 s
 //! chunks. No B-frames are used, so decode time equals presentation time.
 
-use std::io::{self, Write};
+use std::io::{self, Seek, SeekFrom, Write};
 
 use crate::config::Codec;
 
@@ -107,6 +107,95 @@ pub fn write<W: Write>(
         }
     }
     Ok(ftyp.len() as u64 + moov.len() as u64 + mdat_header as u64 + mdat_payload)
+}
+
+/// Writes a file whose samples arrive over time, for long recordings.
+/// Samples go to `mdat` as they arrive and `moov` goes at the end, so the
+/// file is playable only after `finish`.
+pub struct StreamWriter<W: Write + Seek> {
+    out: W,
+    tracks: Vec<Track>,
+    chunks: Vec<Chunk>,
+    offsets: Vec<u64>,
+    pos: u64,
+    mdat_start: u64,
+}
+
+impl<W: Write + Seek> StreamWriter<W> {
+    /// `tracks` give the kinds and names; their sample lists are ignored.
+    pub fn new(mut out: W, mut tracks: Vec<Track>) -> io::Result<Self> {
+        for t in &mut tracks {
+            t.samples.clear();
+        }
+        let f = ftyp(&tracks);
+        out.write_all(&f)?;
+        let mdat_start = f.len() as u64;
+        // 64-bit mdat size, set in `finish`.
+        out.write_all(&1u32.to_be_bytes())?;
+        out.write_all(b"mdat")?;
+        out.write_all(&0u64.to_be_bytes())?;
+        Ok(Self { out, tracks, chunks: Vec::new(), offsets: Vec::new(), pos: mdat_start + 16, mdat_start })
+    }
+
+    pub fn track_mut(&mut self, i: usize) -> &mut Track {
+        &mut self.tracks[i]
+    }
+
+    /// Bytes written so far.
+    pub fn len(&self) -> u64 {
+        self.pos
+    }
+
+    /// Appends samples to one track as one chunk. `data` holds the samples'
+    /// bytes back to back. Sample durations may be 0; `finish` sets them.
+    pub fn append(&mut self, track: usize, samples: &[SampleInfo], data: &[u8]) -> io::Result<()> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+        debug_assert_eq!(samples.iter().map(|s| s.size as usize).sum::<usize>(), data.len());
+        let first = self.tracks[track].samples.len();
+        self.out.write_all(data)?;
+        self.chunks.push(Chunk { track, first_sample: first, count: samples.len() });
+        self.offsets.push(self.pos);
+        self.pos += data.len() as u64;
+        self.tracks[track].samples.extend_from_slice(samples);
+        Ok(())
+    }
+
+    /// Sets missing durations, drops empty tracks, writes `moov` and the
+    /// `mdat` size. `last_duration[t]` is the duration of track t's last sample.
+    pub fn finish(mut self, last_duration: impl Fn(usize) -> u32) -> io::Result<W> {
+        for (ti, t) in self.tracks.iter_mut().enumerate() {
+            let n = t.samples.len();
+            for i in 0..n {
+                if t.samples[i].duration == 0 {
+                    t.samples[i].duration = match t.samples.get(i + 1) {
+                        Some(next) => next.time.saturating_sub(t.samples[i].time).max(1) as u32,
+                        None => last_duration(ti).max(1),
+                    };
+                }
+            }
+        }
+        // Remove tracks without samples and renumber the chunks.
+        let keep: Vec<usize> = (0..self.tracks.len()).filter(|&i| !self.tracks[i].samples.is_empty()).collect();
+        let tracks: Vec<Track> = std::mem::take(&mut self.tracks)
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| keep.contains(i))
+            .map(|(_, t)| t)
+            .collect();
+        for c in &mut self.chunks {
+            c.track = keep.iter().position(|&k| k == c.track).unwrap_or(usize::MAX);
+        }
+        let moov = moov(&tracks, &self.chunks, &self.offsets, true);
+        self.out.write_all(&moov)?;
+        let mdat_size = self.pos - self.mdat_start;
+        self.out.seek(SeekFrom::Start(self.mdat_start + 8))?;
+        self.out.write_all(&mdat_size.to_be_bytes())?;
+        self.out.seek(SeekFrom::End(0))?;
+        self.out.flush()?;
+        Ok(self.out)
+    }
 }
 
 fn plan_chunks(tracks: &[Track]) -> Vec<Chunk> {
@@ -560,6 +649,43 @@ mod tests {
         }
         assert!(find_box(traks[2], &[b"edts", b"elst"]).is_some());
         assert!(find_box(traks[0], &[b"mdia", b"minf", b"stbl", b"stss"]).is_some());
+    }
+
+    #[test]
+    fn stream_writer_puts_moov_last_with_valid_offsets() {
+        let tracks = vec![video_track(0), audio_track(0, 0), audio_track(0, 0)];
+        let mut w = StreamWriter::new(std::io::Cursor::new(Vec::new()), tracks).unwrap();
+        // Two rounds of chunks; the third track never gets samples.
+        for round in 0..2u64 {
+            let v: Vec<SampleInfo> = (0..30).map(|i| SampleInfo { time: (round * 30 + i) * 1500, duration: 0, size: 10, key: i == 0 }).collect();
+            w.append(0, &v, &vec![0xA0 | round as u8; 300]).unwrap();
+            let a: Vec<SampleInfo> = (0..24).map(|i| SampleInfo { time: (round * 24 + i) * 1024, duration: 1024, size: 4, key: true }).collect();
+            w.append(1, &a, &vec![0xB0 | round as u8; 96]).unwrap();
+        }
+        let out = w.finish(|_| 1500).unwrap().into_inner();
+        let ftyp_len = u32::from_be_bytes(out[..4].try_into().unwrap()) as usize;
+        assert_eq!(&out[ftyp_len + 4..ftyp_len + 8], b"mdat");
+        let mdat_size = u64::from_be_bytes(out[ftyp_len + 8..ftyp_len + 16].try_into().unwrap()) as usize;
+        assert_eq!(&out[ftyp_len + mdat_size + 4..ftyp_len + mdat_size + 8], b"moov");
+        let moov = &out[ftyp_len + mdat_size + 8..];
+        let mut traks = Vec::new();
+        let mut d = moov;
+        while d.len() >= 8 {
+            let size = u32::from_be_bytes(d[..4].try_into().unwrap()) as usize;
+            if &d[4..8] == b"trak" {
+                traks.push(&d[8..size]);
+            }
+            d = &d[size..];
+        }
+        assert_eq!(traks.len(), 2, "the empty track is dropped");
+        for (ti, (trak, tag)) in traks.iter().zip([0xA0u8, 0xB0]).enumerate() {
+            let co64 = find_box(trak, &[b"mdia", b"minf", b"stbl", b"co64"]).unwrap();
+            assert_eq!(u32::from_be_bytes(co64[4..8].try_into().unwrap()), 2, "track {ti}");
+            for c in 0..2usize {
+                let off = u64::from_be_bytes(co64[8 + c * 8..16 + c * 8].try_into().unwrap()) as usize;
+                assert_eq!(out[off], tag | c as u8, "track {ti} chunk {c}");
+            }
+        }
     }
 
     #[test]

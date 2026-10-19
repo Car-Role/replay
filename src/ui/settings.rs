@@ -6,7 +6,7 @@ use eframe::egui::{self, CornerRadius, Margin, RichText, Stroke};
 
 use super::Shared;
 use super::theme::{self, Tokens, icon};
-use crate::config::{Codec, Config, RateControl, Resolution};
+use crate::config::{Codec, Config, OverlayCorner, RateControl, Resolution};
 
 /// What the Updates card shows.
 #[derive(Clone)]
@@ -27,6 +27,8 @@ pub struct SettingsPage {
     password: String,
     mics: Vec<(String, String)>,
     encoders: Vec<(Codec, bool)>,
+    /// Clips in the folder and their total size, for the Storage section.
+    usage: (usize, u64),
 }
 
 const FPS: [u32; 5] = [30, 60, 120, 144, 240];
@@ -45,6 +47,7 @@ impl SettingsPage {
             password: String::new(),
             mics: crate::sys::list_microphones(),
             encoders: crate::sys::available_codecs(),
+            usage: folder_usage(&cfg.output_dir),
         }
     }
 
@@ -71,6 +74,7 @@ impl SettingsPage {
             ui.set_max_width(980.0);
             ui.spacing_mut().item_spacing.y = 4.0;
             self.recording(ui, &t, icons);
+            self.storage(ui, &t, icons);
             self.audio(ui, &t, icons);
             self.hotkeys(ui, &t, icons);
             self.detection(ui, &t, icons);
@@ -169,6 +173,33 @@ impl SettingsPage {
         });
     }
 
+    fn storage(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
+        let d = &mut self.draft;
+        theme::section(ui, t, "Storage");
+        let (n, bytes) = self.usage;
+        let used = format!("The clips folder holds {n} {} ({:.1} GB). Favorites are never deleted.", if n == 1 { "clip" } else { "clips" }, bytes as f64 / 1e9);
+        theme::setting(ui, t, icons, Some(icon::FOLDER), "Limit the clips folder size", &used, |ui| {
+            let label = |gb: u32| if gb == 0 { "No limit".to_string() } else if gb >= 1000 { format!("{} TB", gb / 1000) } else { format!("{gb} GB") };
+            egui::ComboBox::from_id_salt("max-gb").width(COMBO_W).selected_text(label(d.storage.max_gb)).show_ui(ui, |ui| {
+                for gb in [0, 10, 25, 50, 100, 250, 500, 1000] {
+                    ui.selectable_value(&mut d.storage.max_gb, gb, label(gb));
+                }
+            });
+        });
+        theme::setting(ui, t, icons, Some(icon::CLOCK), "Delete old clips", "Clips over the limits are deleted for good, oldest first", |ui| {
+            let label = |days: u32| match days {
+                0 => "Never".to_string(),
+                365 => "After 1 year".to_string(),
+                d => format!("After {d} days"),
+            };
+            egui::ComboBox::from_id_salt("max-age").width(COMBO_W).selected_text(label(d.storage.max_age_days)).show_ui(ui, |ui| {
+                for days in [0, 7, 14, 30, 60, 90, 180, 365] {
+                    ui.selectable_value(&mut d.storage.max_age_days, days, label(days));
+                }
+            });
+        });
+    }
+
     fn audio(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
         let d = &mut self.draft;
         theme::section(ui, t, "Audio");
@@ -213,6 +244,7 @@ impl SettingsPage {
         for (label, desc, value) in [
             ("Save a replay", "Saves the game in front", &mut d.hotkeys.save_focused),
             ("Save all games", "Saves every game being recorded", &mut d.hotkeys.save_all),
+            ("Start or stop recording", "Records the whole session of the game in front until you press it again", &mut d.hotkeys.record),
             ("Mark as game", "Starts or stops recording the app in front", &mut d.hotkeys.toggle_game),
         ] {
             theme::setting(ui, t, icons, Some(icon::KEYBOARD), label, desc, |ui| {
@@ -349,8 +381,18 @@ impl SettingsPage {
     fn general(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
         let d = &mut self.draft;
         theme::section(ui, t, "General");
-        theme::setting(ui, t, icons, Some(icon::INFO), "Notifications", "Show a message when a replay is saved", |ui| {
+        theme::setting(ui, t, icons, Some(icon::INFO), "Notifications", "Show a Windows notification when a replay is saved", |ui| {
             theme::toggle(ui, t, &mut d.notify);
+        });
+        theme::setting(ui, t, icons, Some(icon::VIDEO), "In-game notice", "Show a small card over the game when a replay is saved. It never shows up in clips", |ui| {
+            theme::toggle(ui, t, &mut d.overlay.enabled);
+        });
+        theme::setting(ui, t, icons, None, "Notice position", "", |ui| {
+            egui::ComboBox::from_id_salt("corner").width(COMBO_W).selected_text(d.overlay.corner.label()).show_ui(ui, |ui| {
+                for c in OverlayCorner::ALL {
+                    ui.selectable_value(&mut d.overlay.corner, c, c.label());
+                }
+            });
         });
         theme::setting(ui, t, icons, Some(icon::VOLUME), "Sound", "Play a short sound when a replay is saved", |ui| {
             theme::toggle(ui, t, &mut d.sound);
@@ -379,7 +421,7 @@ impl SettingsPage {
 
     fn save(&mut self, shared: &mut Shared) -> bool {
         let mut new = self.built(&shared.cfg);
-        if let Err(e) = [&new.hotkeys.save_focused, &new.hotkeys.save_all, &new.hotkeys.toggle_game]
+        if let Err(e) = [&new.hotkeys.save_focused, &new.hotkeys.save_all, &new.hotkeys.toggle_game, &new.hotkeys.record]
             .iter()
             .filter(|h| !h.trim().is_empty())
             .try_for_each(|h| crate::hotkey::parse(h).map(|_| ()))
@@ -413,6 +455,11 @@ impl SettingsPage {
             }
         }
     }
+}
+
+fn folder_usage(dir: &std::path::Path) -> (usize, u64) {
+    let clips = crate::library::clips_on_disk(dir);
+    (clips.len(), clips.iter().map(|c| c.size).sum())
 }
 
 /// Installs the downloaded update. The recorder restarts itself when it

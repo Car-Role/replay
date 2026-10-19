@@ -1,5 +1,6 @@
 //! User settings, stored as TOML in `%APPDATA%\Replay\config.toml`.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -148,6 +149,8 @@ pub struct HotkeyConfig {
     pub save_focused: String,
     pub save_all: String,
     pub toggle_game: String,
+    /// Starts or stops a full recording of the game in front.
+    pub record: String,
 }
 
 impl Default for HotkeyConfig {
@@ -156,6 +159,7 @@ impl Default for HotkeyConfig {
             save_focused: "Alt+F10".into(),
             save_all: "Alt+Shift+F10".into(),
             toggle_game: "Ctrl+Alt+F10".into(),
+            record: "Alt+F9".into(),
         }
     }
 }
@@ -212,6 +216,72 @@ impl Default for UpdateConfig {
     }
 }
 
+/// Settings for one game that replace the general ones. Empty fields use
+/// the general setting.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct GameSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<Resolution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bitrate_kbps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay_seconds: Option<u32>,
+}
+
+impl GameSettings {
+    pub fn is_empty(&self) -> bool {
+        *self == GameSettings::default()
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum OverlayCorner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl OverlayCorner {
+    pub const ALL: [OverlayCorner; 4] = [OverlayCorner::TopLeft, OverlayCorner::TopRight, OverlayCorner::BottomLeft, OverlayCorner::BottomRight];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            OverlayCorner::TopLeft => "Top left",
+            OverlayCorner::TopRight => "Top right",
+            OverlayCorner::BottomLeft => "Bottom left",
+            OverlayCorner::BottomRight => "Bottom right",
+        }
+    }
+}
+
+/// The notice shown over the game when a replay is saved.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct OverlayConfig {
+    pub enabled: bool,
+    pub corner: OverlayCorner,
+}
+
+impl Default for OverlayConfig {
+    fn default() -> Self {
+        Self { enabled: true, corner: OverlayCorner::TopRight }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct StorageConfig {
+    /// Largest size of the clips folder in GB; 0 means no limit.
+    pub max_gb: u32,
+    /// Clips older than this many days are deleted; 0 keeps them.
+    pub max_age_days: u32,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Config {
@@ -226,6 +296,10 @@ pub struct Config {
     pub detection: DetectionConfig,
     pub share: ShareConfig,
     pub updates: UpdateConfig,
+    pub storage: StorageConfig,
+    pub overlay: OverlayConfig,
+    /// Per-game settings, keyed by the lower-case executable name.
+    pub games: BTreeMap<String, GameSettings>,
 }
 
 impl Default for Config {
@@ -242,6 +316,9 @@ impl Default for Config {
             detection: DetectionConfig::default(),
             share: ShareConfig::default(),
             updates: UpdateConfig::default(),
+            storage: StorageConfig::default(),
+            overlay: OverlayConfig::default(),
+            games: BTreeMap::new(),
         }
     }
 }
@@ -279,6 +356,32 @@ impl Config {
         std::fs::rename(tmp, path)
     }
 
+    /// The settings a game records with: the general ones, with that game's
+    /// own settings on top.
+    pub fn for_game(&self, exe: &str) -> Config {
+        let mut c = self.clone();
+        if let Some(g) = self.games.get(exe) {
+            if let Some(v) = g.fps {
+                c.video.fps = v;
+            }
+            if let Some(v) = g.resolution {
+                c.video.resolution = v;
+            }
+            if let Some(v) = g.bitrate_kbps {
+                c.video.bitrate_kbps = v;
+            }
+            if let Some(v) = g.replay_seconds {
+                c.replay_seconds = v;
+            }
+        }
+        c.sanitized()
+    }
+
+    /// The longest replay any game keeps (the microphone buffer covers it).
+    pub fn max_replay_seconds(&self) -> u32 {
+        self.games.values().filter_map(|g| g.replay_seconds).chain([self.replay_seconds]).max().unwrap_or(self.replay_seconds)
+    }
+
     /// Clamps values to ranges the pipeline supports.
     pub fn sanitized(mut self) -> Self {
         self.replay_seconds = self.replay_seconds.clamp(5, 30 * 60);
@@ -292,6 +395,17 @@ impl Config {
         };
         self.audio.microphone_volume = self.audio.microphone_volume.min(400);
         self.audio.game_volume = self.audio.game_volume.min(400);
+        let mut games = BTreeMap::new();
+        for (exe, mut g) in std::mem::take(&mut self.games) {
+            g.fps = g.fps.map(|v| v.clamp(10, 240));
+            g.bitrate_kbps = g.bitrate_kbps.map(|v| v.clamp(1_000, 200_000));
+            g.replay_seconds = g.replay_seconds.map(|v| v.clamp(5, 30 * 60));
+            let exe = exe.trim().to_ascii_lowercase();
+            if !g.is_empty() && !exe.is_empty() {
+                games.insert(exe, g);
+            }
+        }
+        self.games = games;
         for list in [&mut self.detection.include, &mut self.detection.exclude] {
             for s in list.iter_mut() {
                 *s = s.trim().to_ascii_lowercase();
@@ -322,6 +436,21 @@ mod tests {
         assert_eq!(c.replay_seconds, 30);
         assert_eq!(c.video.codec, Codec::Hevc);
         assert_eq!(c.video.fps, 60);
+    }
+
+    #[test]
+    fn game_settings_override_and_round_trip() {
+        let mut c = Config::default();
+        c.games.insert("game.exe".into(), GameSettings { fps: Some(144), replay_seconds: Some(300), ..Default::default() });
+        c.games.insert("empty.exe".into(), GameSettings::default());
+        let c = c.sanitized();
+        assert!(!c.games.contains_key("empty.exe"));
+        let g = c.for_game("game.exe");
+        assert_eq!((g.video.fps, g.replay_seconds, g.video.bitrate_kbps), (144, 300, 25_000));
+        assert_eq!(c.for_game("other.exe").video.fps, 60);
+        assert_eq!(c.max_replay_seconds(), 300);
+        let back: Config = toml::from_str(&toml::to_string_pretty(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
     }
 
     #[test]

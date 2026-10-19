@@ -177,6 +177,8 @@ pub mod icon {
     pub const ADD: char = '\u{E710}';
     pub const RECORD: char = '\u{E7C8}';
     pub const CANCEL: char = '\u{E711}';
+    pub const STAR: char = '\u{E734}';
+    pub const STAR_FILLED: char = '\u{E735}';
 }
 
 /// Loads Segoe UI (regular and semibold) and Segoe Fluent Icons on Windows,

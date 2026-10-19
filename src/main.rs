@@ -6,10 +6,12 @@ mod edit;
 mod games;
 mod hotkey;
 mod ipc;
+mod library;
 mod logger;
 mod media;
 mod mux;
 mod paths;
+mod record;
 mod ring;
 mod share;
 mod sys;
@@ -19,7 +21,7 @@ mod util;
 
 // Short paths for the Windows backend modules, which refer to each other as `crate::<name>`.
 #[cfg(windows)]
-use sys::windows::{app, audio, capture, detect, encoder, gpu, session, tray, verify};
+use sys::windows::{app, audio, capture, detect, encoder, gpu, overlay, session, tray, verify};
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -31,7 +33,7 @@ fn main() {
         args.drain(..args.len().min(2));
     }
     let mode = args.first().map(String::as_str).unwrap_or("");
-    let text_mode = mode.starts_with("--") && !matches!(mode, "--library" | "--settings" | "--games" | "--save" | "--save-all");
+    let text_mode = mode.starts_with("--") && !matches!(mode, "--library" | "--settings" | "--games" | "--save" | "--save-all" | "--record");
     sys::cli::prepare(text_mode);
     update::finish_pending();
 
@@ -40,6 +42,11 @@ fn main() {
             logger::init("library", cfg!(debug_assertions));
             sys::init_ui();
             ui::run(args.get(1).map(std::path::PathBuf::from), mode.trim_start_matches("--"));
+        }
+        "--record" => {
+            if !sys::shell::send_to_recorder(ipc::RecorderMsg::Record) {
+                std::process::exit(2);
+            }
         }
         "--save" | "--save-all" => {
             if !sys::cli::send_save(mode == "--save-all") {
@@ -73,6 +80,7 @@ replay                         start the recorder (tray / menu bar)
 replay --library [clip]        open the clip library
 replay --settings              open the library on the Settings tab
 replay --save | --save-all     ask the running recorder to save a replay
+replay --record                start or stop recording the game in front
 replay --trim <file> <a> <b>   save a trimmed copy (seconds)
 replay --join <file>...        join clips with the same video settings
 replay --probe                 show capture and encoder support

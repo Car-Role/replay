@@ -23,6 +23,22 @@ pub fn prepare(text_mode: bool) {
     }
 }
 
+/// Runs the message loop of this thread for `d`.
+fn pump_for(d: std::time::Duration) {
+    use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage};
+    let end = std::time::Instant::now() + d;
+    while std::time::Instant::now() < end {
+        unsafe {
+            let mut msg = MSG::default();
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 /// Runs a Windows-only mode. Returns false when `mode` is not one.
 pub fn handle(mode: &str, args: &[String]) -> bool {
     match mode {
@@ -66,6 +82,20 @@ pub fn handle(mode: &str, args: &[String]) -> bool {
         "--detect" => {
             logger::init("probe", false);
             detect_report();
+        }
+        "--overlay-test" => {
+            // Shows the in-game notice for a few seconds. With "--visible" it
+            // also shows in screenshots, for checking how it looks.
+            logger::init("probe", false);
+            if args.iter().any(|a| a == "--visible") {
+                crate::overlay::SHOW_IN_CAPTURE.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            let corner = crate::config::Config::load().overlay.corner;
+            crate::overlay::show(None, corner, crate::overlay::Kind::Busy, "Saving replay", "RuneLite", Some(1500));
+            pump_for(std::time::Duration::from_millis(1500));
+            let detail = "RuneLite  \u{00b7}  2:00  \u{00b7}  187.4 MB";
+            crate::overlay::show(None, corner, crate::overlay::Kind::Done, "Replay saved", detail, Some(6000));
+            pump_for(std::time::Duration::from_millis(7000));
         }
         _ => return false,
     }
@@ -178,13 +208,26 @@ fn selftest(secs: u64, codec: Option<&str>) -> bool {
             println!("session failed: {e}");
         }
     });
-    let mic_ring = std::sync::Arc::new(std::sync::Mutex::new(session::ring_for(&cfg, cfg.audio.bitrate_kbps)));
+    let mic_ring = std::sync::Arc::new(std::sync::Mutex::new(session::ring_for(cfg.replay_seconds, cfg.audio.bitrate_kbps)));
     let mic_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mic_thread = {
         let (r, st, kbps) = (mic_ring.clone(), mic_stop.clone(), cfg.audio.bitrate_kbps);
         std::thread::spawn(move || audio::run(audio::Source::Microphone(String::new()), kbps, r, st))
     };
     println!("recording the primary monitor for {secs} s with {:?}...", cfg.video.codec);
+    // A session recording runs alongside, to test the streaming writer.
+    let (rec_tx, rec_rx) = std::sync::mpsc::channel();
+    let rec_src = crate::record::Sources { video: s.video.clone(), state: s.video_state.clone(), game: s.game_audio.clone(), mic: Some(mic_ring.clone()) };
+    std::thread::sleep(Duration::from_millis(1200));
+    let mut rec = match crate::record::start(&cfg.output_dir, "Self test", rec_src, clip::AudioOptions::from_config(&cfg), move |r| {
+        let _ = rec_tx.send(r);
+    }) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            println!("FAIL: session recording did not start: {e}");
+            None
+        }
+    };
     let threads_before = thread_times();
     let cpu_before = cpu_time();
     let t = std::time::Instant::now();
@@ -202,6 +245,36 @@ fn selftest(secs: u64, codec: Option<&str>) -> bool {
     let mem = working_set();
     let threads_after = thread_times();
 
+    let mut rec_ok = rec.is_some();
+    if let Some(r) = rec.as_mut() {
+        r.stop();
+        match rec_rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(Ok(p)) => {
+                println!("session recording: {}", p.display());
+                match verify::check(&p) {
+                    Ok(streams) => {
+                        for r in &streams {
+                            println!("  session stream {} {}: {} samples, {} decoded, {:.2}-{:.2} s", r.index, r.major, r.samples, r.decoded, r.first_time as f64 / 1e7, r.last_time as f64 / 1e7);
+                        }
+                        rec_ok = streams.iter().any(|r| r.major == "video" && r.decoded > 0);
+                    }
+                    Err(e) => {
+                        println!("FAIL: session recording does not play: {e}");
+                        rec_ok = false;
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                println!("FAIL: session recording: {e}");
+                rec_ok = false;
+            }
+            Err(_) => {
+                println!("FAIL: session recording did not finish");
+                rec_ok = false;
+            }
+        }
+        r.stop_and_wait();
+    }
     let dur = (secs as i64) * ring::TICKS_PER_SEC;
     let video = s.video.lock().unwrap().snapshot(dur);
     let state = s.video_state.lock().unwrap().clone();
@@ -271,8 +344,14 @@ fn selftest(secs: u64, codec: Option<&str>) -> bool {
                 );
             }
             let ok = streams.iter().any(|r| r.major == "video" && r.samples > 0);
-            println!("{}", if ok { "PASS" } else { "FAIL: no video samples read back" });
-            ok
+            if !ok {
+                println!("FAIL: no video samples read back");
+            } else if !rec_ok {
+                println!("FAIL: the session recording failed");
+            } else {
+                println!("PASS");
+            }
+            ok && rec_ok
         }
         Err(e) => {
             println!("FAIL: read back: {e}");

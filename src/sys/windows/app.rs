@@ -45,6 +45,8 @@ pub const WM_APP_UPDATE_RESULT: u32 = WM_APP + 8;
 pub const WM_APP_UPDATE_STAGED: u32 = WM_APP + 9;
 /// The library window asks to install the staged update now.
 pub const WM_APP_INSTALL_UPDATE: u32 = WM_APP + 10;
+/// A session recording finished (lParam: Box<(String, Result<PathBuf, String>)>).
+pub const WM_APP_RECORD_DONE: u32 = WM_APP + 11;
 
 /// Ok(None): up to date. Ok(Some(Ok(v))): v is downloaded and verified.
 /// Ok(Some(Err((v, page, why)))): v exists but cannot be installed here.
@@ -58,6 +60,7 @@ const TICK_MS: u32 = 2000;
 const HK_SAVE: i32 = 1;
 const HK_SAVE_ALL: i32 = 2;
 const HK_TOGGLE: i32 = 3;
+const HK_RECORD: i32 = 4;
 const MAX_SESSIONS: usize = 6;
 /// Buffers of games that just closed stay saveable this long.
 const GRACE: Duration = Duration::from_secs(90);
@@ -70,6 +73,7 @@ const CMD_LIBRARY: usize = 104;
 const CMD_EXIT: usize = 105;
 const CMD_UPDATE: usize = 106;
 const CMD_RELEASE_PAGE: usize = 107;
+const CMD_RECORD: usize = 108;
 const CMD_STOP_BASE: usize = 200;
 
 struct Mic {
@@ -115,6 +119,12 @@ struct App {
     update_ready: Option<String>,
     /// A newer version this copy cannot install itself: (version, page).
     update_notice: Option<(String, String)>,
+    /// Session recordings, by game process id.
+    recordings: Vec<(u32, crate::record::Recording)>,
+    /// Stopped recordings still writing their file.
+    finishing: Vec<crate::record::Recording>,
+    /// Executables last published as having a session recording.
+    published_capturing: RefCell<Vec<String>>,
 }
 
 thread_local! {
@@ -202,12 +212,16 @@ pub fn run() -> windows::core::Result<()> {
             update_checking: false,
             update_ready: crate::update::staged().map(|s| s.version),
             update_notice: None,
+            recordings: Vec::new(),
+            finishing: Vec::new(),
+            published_capturing: RefCell::new(Vec::new()),
         };
         APP.with(|a| *a.borrow_mut() = Some(app));
         with_app(|a| {
             a.register_hotkeys(true);
             a.scan_all_windows();
             a.check_foreground();
+            a.enforce_storage();
         });
         SetTimer(Some(hwnd), TIMER_TICK, TICK_MS, None);
 
@@ -245,6 +259,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 HK_SAVE => a.save_focused(),
                 HK_SAVE_ALL => a.save_all(),
                 HK_TOGGLE => a.toggle_foreground(),
+                HK_RECORD => a.toggle_record(),
                 _ => {}
             });
             LRESULT(0)
@@ -277,6 +292,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             with_app(|a| a.on_clip_done(result.0, result.1));
             LRESULT(0)
         }
+        WM_APP_RECORD_DONE => {
+            let result = unsafe { *Box::from_raw(lparam.0 as *mut (String, Result<PathBuf, String>)) };
+            with_app(|a| a.on_record_done(result.0, result.1));
+            LRESULT(0)
+        }
         WM_APP_UPLOAD_DONE => {
             let result = unsafe { *Box::from_raw(lparam.0 as *mut Result<String, String>) };
             with_app(|a| a.on_upload_done(result));
@@ -291,7 +311,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_APP_SAVE => {
-            with_app(|a| if wparam.0 == 1 { a.save_all() } else { a.save_focused() });
+            with_app(|a| match wparam.0 {
+                1 => a.save_all(),
+                2 => a.toggle_record(),
+                _ => a.save_focused(),
+            });
             LRESULT(0)
         }
         WM_APP_UPDATE_RESULT => {
@@ -399,7 +423,7 @@ fn fmt_dur(secs: u64) -> String {
 impl App {
     fn register_hotkeys(&mut self, announce: bool) {
         unsafe {
-            for id in [HK_SAVE, HK_SAVE_ALL, HK_TOGGLE] {
+            for id in [HK_SAVE, HK_SAVE_ALL, HK_TOGGLE, HK_RECORD] {
                 let _ = UnregisterHotKey(Some(self.hwnd), id);
             }
         }
@@ -407,6 +431,7 @@ impl App {
             (HK_SAVE, self.cfg.hotkeys.save_focused.clone()),
             (HK_SAVE_ALL, self.cfg.hotkeys.save_all.clone()),
             (HK_TOGGLE, self.cfg.hotkeys.toggle_game.clone()),
+            (HK_RECORD, self.cfg.hotkeys.record.clone()),
         ];
         let mut problems = Vec::new();
         for (id, text) in keys {
@@ -502,12 +527,13 @@ impl App {
         }
         let Some(gpu) = self.gpu() else { return };
         let (mw, mh) = crate::detect::monitor_size(game.hwnd);
-        let out = self.cfg.video.resolution.output_size(mw, mh);
+        let cfg = self.cfg.for_game(&game.exe);
+        let out = cfg.video.resolution.output_size(mw, mh);
         log::info!("detected {} ({}) by {reason:?}", game.name, game.exe);
         crate::games::note_detected(&game.exe, &game.name, &crate::detect::process_path(game.pid).unwrap_or_default(), reason.describe());
         let hwnd_app = self.hwnd.0 as isize;
         let target = crate::capture::Target::Window(game.hwnd);
-        let session = Session::start(gpu, game, target, &self.cfg, out, move |pid, end| post(hwnd_app, WM_APP_SESSION_END, pid as usize, end));
+        let session = Session::start(gpu, game, target, &cfg, out, move |pid, end| post(hwnd_app, WM_APP_SESSION_END, pid as usize, end));
         self.sessions.push(session);
         self.ensure_mic();
         self.update_tray();
@@ -567,6 +593,7 @@ impl App {
                 self.gpu = None;
             }
         }
+        self.sync_recordings();
         self.ensure_mic();
         self.update_tray();
     }
@@ -597,6 +624,7 @@ impl App {
         if self.sessions.is_empty() && self.gpu.take().is_some() {
             log::info!("no games; GPU device released");
         }
+        self.sync_recordings();
         if self.sessions.len() != before || self.running().count() == 0 {
             self.ensure_mic();
         }
@@ -608,7 +636,7 @@ impl App {
         let want = self.cfg.audio.microphone && self.running().next().is_some();
         match (&mut self.mic, want) {
             (None, true) => {
-                let ring = Arc::new(Mutex::new(crate::session::ring_for(&self.cfg, self.cfg.audio.bitrate_kbps)));
+                let ring = Arc::new(Mutex::new(crate::session::ring_for(self.cfg.max_replay_seconds(), self.cfg.audio.bitrate_kbps)));
                 let stop = Arc::new(AtomicBool::new(false));
                 let (r, s) = (ring.clone(), stop.clone());
                 let src = crate::audio::Source::Microphone(self.cfg.audio.microphone_device.clone());
@@ -639,13 +667,23 @@ impl App {
     fn update_tray(&self) {
         let mut exes: Vec<String> = self.running().map(|s| s.game.exe.clone()).collect();
         exes.sort();
-        if *self.published.borrow() != exes {
-            crate::games::note_recording(&exes);
+        let mut capturing: Vec<String> = self
+            .recordings
+            .iter()
+            .filter_map(|(pid, _)| self.sessions.iter().find(|s| s.game.pid == *pid).map(|s| s.game.exe.clone()))
+            .collect();
+        capturing.sort();
+        if *self.published.borrow() != exes || *self.published_capturing.borrow() != capturing {
+            crate::games::note_recording(&exes, &capturing);
             *self.published.borrow_mut() = exes;
+            *self.published_capturing.borrow_mut() = capturing;
         }
         let names: Vec<&str> = self.running().map(|s| s.game.name.as_str()).collect();
         let (icon, tip) = if names.is_empty() {
             (self.icons.idle, if self.paused { "Replay: paused".to_string() } else { "Replay: waiting for a game".to_string() })
+        } else if !self.recordings.is_empty() {
+            let rec: Vec<&str> = self.recordings.iter().map(|(_, r)| r.game.as_str()).collect();
+            (self.icons.recording, format!("Replay: recording the session of {}", rec.join(", ")))
         } else {
             (self.icons.recording, format!("Replay: recording {}", names.join(", ")))
         };
@@ -681,7 +719,7 @@ impl App {
 
     fn save(&mut self, i: usize) {
         let s = &self.sessions[i];
-        let dur = i64::from(self.cfg.replay_seconds) * TICKS_PER_SEC;
+        let dur = i64::from(s.replay_seconds) * TICKS_PER_SEC;
         // Snapshots share packet memory with the rings; this takes microseconds.
         let video = s.video.lock().map(|r| r.snapshot(dur)).unwrap_or_default();
         let Some(t0) = video.first().map(|p| p.pts) else {
@@ -697,6 +735,7 @@ impl App {
         let opts = AudioOptions::from_config(&self.cfg);
         let hwnd = self.hwnd.0 as isize;
         let name = s.game.name.clone();
+        self.notice(Some(s.game.hwnd), crate::overlay::Kind::Busy, "Saving replay", &s.game.name, Some(4000));
         self.saving += 1;
         if self.cfg.sound {
             unsafe {
@@ -735,17 +774,140 @@ impl App {
                         self.icons.recording,
                     );
                 }
+                self.notice(
+                    None,
+                    crate::overlay::Kind::Done,
+                    "Replay saved",
+                    &format!("{game}  \u{00b7}  {}  \u{00b7}  {:.1} MB", fmt_dur(secs), size as f64 / 1e6),
+                    Some(2500),
+                );
                 self.last_clip = Some(p.clone());
+                self.enforce_storage();
                 if self.cfg.share.auto_upload {
                     let hwnd = self.hwnd.0 as isize;
                     crate::share::upload_in_background(p, self.cfg.share.clone(), move |r| post(hwnd, WM_APP_UPLOAD_DONE, 0, r));
                 }
             }
             Err(e) => {
+                self.notice(None, crate::overlay::Kind::Error, "Replay not saved", &e, Some(5000));
                 log::error!("save failed: {e}");
                 tray::balloon(self.hwnd, "Replay: save failed", &e, true, self.icons.idle);
             }
         }
+    }
+
+    /// Starts a session recording of the game in front, or stops it.
+    fn toggle_record(&mut self) {
+        let Some(i) = self.session_for_save() else {
+            tray::balloon(self.hwnd, "Replay", "No game is being recorded.", true, self.icons.idle);
+            return;
+        };
+        let pid = self.sessions[i].game.pid;
+        if let Some(k) = self.recordings.iter().position(|(p, _)| *p == pid) {
+            self.stop_recording(k);
+            return;
+        }
+        let s = &self.sessions[i];
+        if !s.is_running() {
+            tray::balloon(self.hwnd, "Replay", &format!("{} is closed.", s.game.name), true, self.icons.idle);
+            return;
+        }
+        let src = crate::record::Sources {
+            video: s.video.clone(),
+            state: s.video_state.clone(),
+            game: s.game_audio.clone(),
+            mic: self.mic.as_ref().map(|m| m.ring.clone()),
+        };
+        let (name, hwnd_game) = (s.game.name.clone(), s.game.hwnd);
+        let hwnd = self.hwnd.0 as isize;
+        let n2 = name.clone();
+        match crate::record::start(&self.cfg.output_dir, &name, src, AudioOptions::from_config(&self.cfg), move |r| {
+            post(hwnd, WM_APP_RECORD_DONE, 0, (n2, r))
+        }) {
+            Ok(rec) => {
+                self.recordings.push((pid, rec));
+                let key = &self.cfg.hotkeys.record;
+                let detail = if key.is_empty() { name.clone() } else { format!("{name}  \u{00b7}  {key} stops it") };
+                self.notice(Some(hwnd_game), crate::overlay::Kind::Recording, "Recording started", &detail, Some(3000));
+                if self.cfg.sound {
+                    unsafe {
+                        let _ = PlaySoundW(w!("DeviceConnect"), None, SND_ALIAS | SND_ASYNC | SND_NODEFAULT);
+                    }
+                }
+            }
+            Err(e) => {
+                self.notice(Some(hwnd_game), crate::overlay::Kind::Error, "Recording did not start", &e, Some(5000));
+                tray::balloon(self.hwnd, "Replay: recording did not start", &e, true, self.icons.idle);
+            }
+        }
+        self.update_tray();
+    }
+
+    fn stop_recording(&mut self, k: usize) {
+        let (pid, mut rec) = self.recordings.remove(k);
+        rec.stop();
+        let near = self.sessions.iter().find(|s| s.game.pid == pid).map(|s| s.game.hwnd);
+        let secs = rec.started.elapsed().as_secs();
+        self.notice(near, crate::overlay::Kind::Busy, "Saving recording", &format!("{}  \u{00b7}  {}", rec.game, fmt_dur(secs)), Some(4000));
+        self.finishing.push(rec);
+        self.update_tray();
+    }
+
+    /// Stops recordings whose game stopped recording.
+    fn sync_recordings(&mut self) {
+        while let Some(k) = self.recordings.iter().position(|(pid, _)| !self.sessions.iter().any(|s| s.game.pid == *pid && s.is_running())) {
+            self.stop_recording(k);
+        }
+    }
+
+    fn on_record_done(&mut self, game: String, r: Result<PathBuf, String>) {
+        if let Some(i) = self.finishing.iter().position(|f| f.game == game) {
+            let mut f = self.finishing.remove(i);
+            f.stop_and_wait();
+        }
+        match r {
+            Ok(p) => {
+                let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                let secs = crate::share::duration_hint(&p).unwrap_or(0);
+                let detail = format!("{game}  \u{00b7}  {}  \u{00b7}  {:.0} MB", fmt_dur(secs), size as f64 / 1e6);
+                self.notice(None, crate::overlay::Kind::Done, "Recording saved", &detail, Some(3000));
+                if self.cfg.notify {
+                    tray::balloon(self.hwnd, &format!("Recording saved: {game}"), &format!("{} - {:.0} MB. Click to open it.", fmt_dur(secs), size as f64 / 1e6), false, self.icons.recording);
+                }
+                self.last_clip = Some(p);
+                self.enforce_storage();
+            }
+            Err(e) => {
+                self.notice(None, crate::overlay::Kind::Error, "Recording not saved", &e, Some(5000));
+                tray::balloon(self.hwnd, "Replay: recording not saved", &e, true, self.icons.idle);
+            }
+        }
+    }
+
+    /// Shows the in-game notice when the user wants it.
+    fn notice(&self, near: Option<isize>, kind: crate::overlay::Kind, title: &str, detail: &str, hold_ms: Option<u32>) {
+        if self.cfg.overlay.enabled {
+            crate::overlay::show(near, self.cfg.overlay.corner, kind, title, detail, hold_ms);
+        }
+    }
+
+    /// Deletes clips over the storage limits, on a background thread.
+    fn enforce_storage(&self) {
+        let s = &self.cfg.storage;
+        if s.max_gb == 0 && s.max_age_days == 0 {
+            return;
+        }
+        let cfg = self.cfg.clone();
+        std::thread::Builder::new()
+            .name("storage".into())
+            .spawn(move || {
+                crate::util::set_thread("replay storage", windows::Win32::System::Threading::THREAD_PRIORITY_BELOW_NORMAL);
+                let (n, bytes) = crate::library::enforce_storage(&cfg);
+                if n > 0 {
+                    log::info!("storage limits: deleted {n} clips ({:.1} GB)", bytes as f64 / 1e9);
+                }
+            })
+            .ok();
     }
 
     /// Checks GitHub, and downloads and verifies a newer release in the background.
@@ -806,6 +968,7 @@ impl App {
         for s in &mut self.sessions {
             s.stop();
         }
+        self.finish_all_recordings();
         if let Some(mut m) = self.mic.take() {
             m.stop();
         }
@@ -874,6 +1037,9 @@ impl App {
         if old.hotkeys != self.cfg.hotkeys {
             self.register_hotkeys(true);
         }
+        if old.storage != self.cfg.storage {
+            self.enforce_storage();
+        }
         if old.detection != self.cfg.detection {
             // Stop games the user turned off; look again for games turned on.
             for s in self.sessions.iter_mut().filter(|s| s.is_running()) {
@@ -886,12 +1052,16 @@ impl App {
             self.last_checked = None;
             self.scan_all_windows();
         }
-        let restart = old.video != self.cfg.video || old.replay_seconds != self.cfg.replay_seconds || old.audio != self.cfg.audio;
+        let restart = old.video != self.cfg.video
+            || old.replay_seconds != self.cfg.replay_seconds
+            || old.audio != self.cfg.audio
+            || old.games != self.cfg.games;
         if restart {
             // New encoder settings need new sessions; buffers start again.
             for s in &mut self.sessions {
                 s.stop();
             }
+            self.sync_recordings();
             self.sessions.clear();
             if let Some(mut m) = self.mic.take() {
                 m.stop();
@@ -915,6 +1085,11 @@ impl App {
             let dis = if any { MF_STRING } else { MF_STRING | MF_GRAYED };
             add(dis, CMD_SAVE, &format!("Save replay\t{}", self.cfg.hotkeys.save_focused));
             add(dis, CMD_SAVE_ALL, &format!("Save all games\t{}", self.cfg.hotkeys.save_all));
+            let rec_label = match self.recordings.first() {
+                Some((_, r)) => format!("Stop recording {} ({})\t{}", r.game, fmt_dur(r.started.elapsed().as_secs()), self.cfg.hotkeys.record),
+                None => format!("Start recording\t{}", self.cfg.hotkeys.record),
+            };
+            add(if any || !self.recordings.is_empty() { MF_STRING } else { MF_STRING | MF_GRAYED }, CMD_RECORD, &rec_label);
             let _ = AppendMenuW(m, MF_SEPARATOR, 0, None);
             if self.sessions.is_empty() {
                 add(MF_STRING | MF_GRAYED, 0, "No game detected");
@@ -951,6 +1126,13 @@ impl App {
         match cmd {
             CMD_SAVE => self.save_focused(),
             CMD_SAVE_ALL => self.save_all(),
+            CMD_RECORD => {
+                if self.recordings.is_empty() {
+                    self.toggle_record();
+                } else {
+                    self.stop_recording(0);
+                }
+            }
             CMD_PAUSE => {
                 self.paused = !self.paused;
                 self.last_checked = None;
@@ -986,6 +1168,16 @@ impl App {
         }
     }
 
+    /// Stops every recording and waits until its file is complete.
+    fn finish_all_recordings(&mut self) {
+        for (_, mut r) in self.recordings.drain(..) {
+            r.stop_and_wait();
+        }
+        for mut r in self.finishing.drain(..) {
+            r.stop_and_wait();
+        }
+    }
+
     fn shutdown(&mut self) {
         unsafe {
             let _ = UnhookWinEvent(self.hook);
@@ -994,6 +1186,7 @@ impl App {
         for s in &mut self.sessions {
             s.stop();
         }
+        self.finish_all_recordings();
         self.sessions.clear();
         if let Some(mut m) = self.mic.take() {
             m.stop();

@@ -47,6 +47,45 @@ enum Page {
     Settings,
 }
 
+#[derive(PartialEq, Clone, Copy)]
+enum Sort {
+    Newest,
+    Oldest,
+    Longest,
+    Largest,
+    Name,
+}
+
+impl Sort {
+    const ALL: [Sort; 5] = [Sort::Newest, Sort::Oldest, Sort::Longest, Sort::Largest, Sort::Name];
+
+    fn label(self) -> &'static str {
+        match self {
+            Sort::Newest => "Newest first",
+            Sort::Oldest => "Oldest first",
+            Sort::Longest => "Longest first",
+            Sort::Largest => "Largest first",
+            Sort::Name => "Name",
+        }
+    }
+
+    fn apply(self, v: &mut [ClipEntry]) {
+        match self {
+            Sort::Newest => v.sort_by_key(|c| std::cmp::Reverse(c.modified)),
+            Sort::Oldest => v.sort_by_key(|c| c.modified),
+            Sort::Longest => v.sort_by(|a, b| b.duration.total_cmp(&a.duration)),
+            Sort::Largest => v.sort_by_key(|c| std::cmp::Reverse(c.size)),
+            Sort::Name => v.sort_by_key(|c| c.name.to_lowercase()),
+        }
+    }
+}
+
+/// A dialog that edits one clip: rename it, or change its tags.
+enum ClipDialog {
+    Rename(PathBuf, String),
+    Tags(PathBuf, String),
+}
+
 #[derive(Clone)]
 pub struct ClipEntry {
     pub path: PathBuf,
@@ -150,9 +189,7 @@ impl Shared {
     }
 }
 
-fn uploads_path() -> PathBuf {
-    crate::paths::data_dir().join("uploads.json")
-}
+use crate::library::uploads_path;
 
 pub struct LibraryApp {
     page: Page,
@@ -174,6 +211,14 @@ pub struct LibraryApp {
     recorder_running: bool,
     recorder_checked: Instant,
     games: crate::games::GameDb,
+    lib: crate::library::Library,
+    sort: Sort,
+    only_favorites: bool,
+    tag: Option<String>,
+    group_by_game: bool,
+    dialog: Option<ClipDialog>,
+    /// The game whose settings panel is open on the Games page.
+    game_open: Option<String>,
 }
 
 impl LibraryApp {
@@ -227,6 +272,13 @@ impl LibraryApp {
             recorder_running: crate::sys::shell::recorder_running(),
             recorder_checked: Instant::now(),
             games: crate::games::GameDb::load(),
+            lib: crate::library::Library::load(),
+            sort: Sort::Newest,
+            only_favorites: false,
+            tag: None,
+            group_by_game: true,
+            dialog: None,
+            game_open: None,
         };
         app.rescan(&ctx);
         if let Some(p) = open.filter(|p| p.exists()) {
@@ -337,7 +389,7 @@ impl LibraryApp {
         // status. Pinned to the window's bottom edge.
         let bottom = ui.ctx().content_rect().bottom();
         let r = ui.max_rect();
-        let area = egui::Rect::from_min_max(egui::pos2(r.left(), bottom - 236.0), egui::pos2(r.right(), bottom - 8.0));
+        let area = egui::Rect::from_min_max(egui::pos2(r.left(), bottom - 276.0), egui::pos2(r.right(), bottom - 8.0));
         let mut bottom_ui = ui.new_child(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
         bottom_ui.spacing_mut().item_spacing.y = 4.0;
         bottom_ui.scope(|ui| {
@@ -367,7 +419,7 @@ impl LibraryApp {
                 let rest = ui.available_rect_before_wrap();
                 let mut cap = ui.new_child(egui::UiBuilder::new().max_rect(rest).layout(egui::Layout::bottom_up(egui::Align::Min)));
                 cap.scope(|ui| {
-                    let block = egui::Rect::from_min_max(egui::pos2(rest.left(), rest.bottom() - 92.0), rest.max);
+                    let block = egui::Rect::from_min_max(egui::pos2(rest.left(), rest.bottom() - 132.0), rest.max);
                     let mut b = ui.new_child(egui::UiBuilder::new().max_rect(block).layout(egui::Layout::top_down(egui::Align::Min)));
                     self.capture_button(&mut b, t);
                 });
@@ -407,6 +459,21 @@ impl LibraryApp {
                     crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::Save(true));
                     self.shared.toast("Saving replays of all games...", false);
                 }
+                // Session recording: start for the game in front, or stop.
+                let capturing: Vec<String> = self.games.games.iter().filter(|g| g.capturing).map(|g| g.name.clone()).collect();
+                ui.add_space(4.0);
+                let (label, hint) = if capturing.is_empty() {
+                    ("Record session".to_string(), format!("Record the game in front until you stop it ({})", self.shared.cfg.hotkeys.record))
+                } else {
+                    (format!("Stop recording {}", capturing.join(", ")), "Finish the recording and save the file".to_string())
+                };
+                let text = theme::label_with_icon(icons, icon::RECORD, &label);
+                let text = if capturing.is_empty() { text } else { text.color(t.critical) };
+                let enabled = can || !capturing.is_empty();
+                if ui.add_enabled(enabled, egui::Button::new(text).min_size(Vec2::new(w, 32.0))).on_hover_text(&hint).clicked() {
+                    crate::sys::shell::send_to_recorder(crate::ipc::RecorderMsg::Record);
+                    self.recorder_checked = Instant::now() - Duration::from_millis(1500);
+                }
             });
         });
     }
@@ -429,15 +496,48 @@ impl LibraryApp {
                 ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text("Search clips").desired_width(240.0).margin(Margin::symmetric(10, 7)));
             });
         });
-        ui.add_space(16.0);
+        ui.add_space(12.0);
+        if !self.clips.is_empty() {
+            self.clips_toolbar(ui, t);
+            ui.add_space(16.0);
+        }
 
         let filter = self.filter.to_lowercase();
+        let lib = &self.lib;
+        let mut shown: Vec<ClipEntry> = self
+            .clips
+            .iter()
+            .filter(|c| {
+                let meta = lib.get(&c.path);
+                let text = filter.is_empty()
+                    || c.name.to_lowercase().contains(&filter)
+                    || c.game.to_lowercase().contains(&filter)
+                    || meta.tags.iter().any(|t| t.to_lowercase().contains(&filter));
+                let fav = !self.only_favorites || meta.favorite;
+                let tag = self.tag.as_ref().is_none_or(|want| meta.tags.iter().any(|t| t.eq_ignore_ascii_case(want)));
+                text && fav && tag
+            })
+            .cloned()
+            .collect();
+        self.sort.apply(&mut shown);
         let mut by_game: Vec<(String, Vec<ClipEntry>)> = Vec::new();
-        for c in self.clips.iter().filter(|c| filter.is_empty() || c.name.to_lowercase().contains(&filter) || c.game.to_lowercase().contains(&filter)) {
-            match by_game.iter_mut().find(|(g, _)| *g == c.game) {
-                Some((_, v)) => v.push(c.clone()),
-                None => by_game.push((c.game.clone(), vec![c.clone()])),
+        if self.group_by_game {
+            for c in shown {
+                match by_game.iter_mut().find(|(g, _)| *g == c.game) {
+                    Some((_, v)) => v.push(c),
+                    None => by_game.push((c.game.clone(), vec![c])),
+                }
             }
+        } else if !shown.is_empty() {
+            by_game.push((String::new(), shown));
+        }
+        if by_game.is_empty() && !self.clips.is_empty() {
+            ui.add_space(40.0);
+            ui.vertical_centered(|ui| {
+                ui.label(theme::subtitle("No clips match").color(t.text));
+                ui.label(RichText::new("Change the search or the filters above.").color(t.text2));
+            });
+            return;
         }
 
         if self.clips.is_empty() && self.scan_rx.is_none() {
@@ -464,11 +564,13 @@ impl LibraryApp {
             let card_w = 264.0;
             let gap = 12.0;
             for (game, clips) in &by_game {
-                ui.horizontal(|ui| {
-                    ui.label(theme::subtitle(game).color(t.text));
-                    ui.label(theme::caption(format!("{} {}", clips.len(), if clips.len() == 1 { "clip" } else { "clips" })).color(t.text3));
-                });
-                ui.add_space(4.0);
+                if !game.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.label(theme::subtitle(game).color(t.text));
+                        ui.label(theme::caption(format!("{} {}", clips.len(), if clips.len() == 1 { "clip" } else { "clips" })).color(t.text3));
+                    });
+                    ui.add_space(4.0);
+                }
                 let cols = (((ui.available_width() + gap) / (card_w + gap)).floor() as usize).max(1);
                 let w = (ui.available_width() - gap * (cols as f32 - 1.0)) / cols as f32;
                 for row in clips.chunks(cols) {
@@ -489,6 +591,47 @@ impl LibraryApp {
         if let Some(p) = open {
             self.open_editor(&ctx, p);
         }
+    }
+
+    /// Filter and sort controls above the gallery.
+    fn clips_toolbar(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        let icons = self.shared.icons;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+            // Segmented "All / Favorites" control.
+            for (fav, label) in [(false, "All clips"), (true, "Favorites")] {
+                let on = self.only_favorites == fav;
+                let text = if fav { theme::label_with_icon(icons, icon::STAR_FILLED, label) } else { label.into() };
+                let b = egui::Button::new(text.color(if on { t.on_accent } else { t.text }))
+                    .fill(if on { t.accent } else { t.control })
+                    .min_size(Vec2::new(0.0, theme::CONTROL_H));
+                if ui.add(b).clicked() {
+                    self.only_favorites = fav;
+                }
+            }
+            ui.add_space(8.0);
+            egui::ComboBox::from_id_salt("sort").width(150.0).selected_text(self.sort.label()).show_ui(ui, |ui| {
+                for s in Sort::ALL {
+                    ui.selectable_value(&mut self.sort, s, s.label());
+                }
+            });
+            ui.checkbox(&mut self.group_by_game, "Group by game");
+            let tags = self.lib.all_tags();
+            if !tags.is_empty() {
+                ui.add_space(8.0);
+                ui.label(theme::caption("Tags").color(t.text2));
+                for tag in tags {
+                    let on = self.tag.as_ref().is_some_and(|x| x.eq_ignore_ascii_case(&tag));
+                    let b = egui::Button::new(theme::caption(format!("#{tag}")).color(if on { t.on_accent } else { t.text }))
+                        .fill(if on { t.accent } else { t.control })
+                        .corner_radius(CornerRadius::same(12))
+                        .min_size(Vec2::new(0.0, 26.0));
+                    if ui.add(b).clicked() {
+                        self.tag = if on { None } else { Some(tag) };
+                    }
+                }
+            }
+        });
     }
 
     /// One gallery card. Returns true when it was clicked (open in editor).
@@ -545,8 +688,34 @@ impl LibraryApp {
         job.wrap = egui::text::TextWrapping::truncate_at_width(w - 24.0);
         p.galley(Pos2::new(tx, img.bottom() + 10.0), p.layout_job(job), t.text);
         let uploaded = self.shared.uploads.contains_key(c.path.to_string_lossy().as_ref());
-        let meta = format!("{:.1} MB{}", c.size as f64 / 1e6, if uploaded { "  ·  Uploaded" } else { "" });
-        p.text(Pos2::new(tx, img.bottom() + 32.0), Align2::LEFT_TOP, meta, FontId::proportional(12.0), t.text2);
+        let info = self.lib.get(&c.path);
+        let mut meta = format!("{:.1} MB{}", c.size as f64 / 1e6, if uploaded { "  ·  Uploaded" } else { "" });
+        if !info.tags.is_empty() {
+            meta.push_str("  ·  ");
+            meta.push_str(&info.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" "));
+        }
+        let mut job = egui::text::LayoutJob::single_section(meta, egui::TextFormat::simple(FontId::proportional(12.0), t.text2));
+        job.wrap = egui::text::TextWrapping::truncate_at_width(w - 24.0);
+        p.galley(Pos2::new(tx, img.bottom() + 32.0), p.layout_job(job), t.text2);
+
+        // Favorite star in the top-right corner of the thumbnail.
+        let star = Rect::from_min_size(Pos2::new(img.right() - 30.0, img.top() + 8.0), Vec2::splat(22.0));
+        let mut star_clicked = false;
+        if hovered || info.favorite {
+            let star_resp = ui.interact(star, resp.id.with("star"), Sense::click());
+            p.rect_filled(star, CornerRadius::same(theme::R_CONTROL), Color32::from_black_alpha(if star_resp.hovered() { 210 } else { 150 }));
+            let color = if info.favorite { Color32::from_rgb(255, 196, 0) } else { Color32::WHITE };
+            if self.shared.icons {
+                let g = if info.favorite { icon::STAR_FILLED } else { icon::STAR };
+                p.text(star.center(), Align2::CENTER_CENTER, g, FontId::new(13.0, egui::FontFamily::Name(theme::ICONS.into())), color);
+            } else {
+                p.text(star.center(), Align2::CENTER_CENTER, if info.favorite { "\u{2605}" } else { "\u{2606}" }, FontId::proportional(14.0), color);
+            }
+            if star_resp.on_hover_text(if info.favorite { "Remove from favorites" } else { "Add to favorites" }).clicked() {
+                star_clicked = true;
+                self.set_favorite(&c.path, !info.favorite);
+            }
+        }
 
         // Selection check box on the thumbnail (on hover, or while selecting).
         let cb = Rect::from_min_size(img.min + Vec2::splat(8.0), Vec2::splat(22.0));
@@ -575,7 +744,50 @@ impl LibraryApp {
             }
         }
         let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-        resp.clicked() && !toggled
+        let mut open = false;
+        resp.context_menu(|ui| {
+            if ui.button("Open in editor").clicked() {
+                open = true;
+                ui.close();
+            }
+            if ui.button(if info.favorite { "Remove from favorites" } else { "Add to favorites" }).clicked() {
+                self.set_favorite(&c.path, !info.favorite);
+                ui.close();
+            }
+            if ui.button("Rename...").clicked() {
+                self.dialog = Some(ClipDialog::Rename(c.path.clone(), c.name.clone()));
+                ui.close();
+            }
+            if ui.button("Edit tags...").clicked() {
+                self.dialog = Some(ClipDialog::Tags(c.path.clone(), info.tags.join(", ")));
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Copy file").clicked() {
+                if crate::sys::shell::copy_file(&c.path) {
+                    self.shared.toast("Copied. Paste it into Discord or a folder.", false);
+                }
+                ui.close();
+            }
+            if ui.button("Show in folder").clicked() {
+                crate::sys::shell::reveal(&c.path);
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Delete...").clicked() {
+                self.confirm_delete = Some(vec![c.path.clone()]);
+                ui.close();
+            }
+        });
+        open || (resp.clicked() && !toggled && !star_clicked)
+    }
+
+    pub(crate) fn set_favorite(&mut self, path: &Path, on: bool) {
+        self.lib = crate::library::Library::load();
+        self.lib.update(path, |m| m.favorite = on);
+        if let Err(e) = self.lib.save() {
+            self.shared.toast(format!("Could not save: {e}"), true);
+        }
     }
 
     /// Floating command bar for selected clips.
@@ -698,19 +910,20 @@ impl LibraryApp {
         }
     }
 
-    /// Fluent ContentDialog for deleting clips.
-    fn delete_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
-        let Some(paths) = self.confirm_delete.clone() else { return };
+    /// Fluent ContentDialog: a smoke layer, a title, a body and two buttons.
+    /// Returns Some(true) for the primary button (or Enter), Some(false) to
+    /// close (Cancel, Escape or a click outside).
+    fn content_dialog(ctx: &egui::Context, t: &Tokens, title: &str, primary: &str, body: impl FnOnce(&mut egui::Ui)) -> Option<bool> {
         let screen = ctx.content_rect();
-        let mut done = false;
+        let mut result = None;
         egui::Area::new(egui::Id::new("smoke")).fixed_pos(screen.min).order(egui::Order::Middle).show(ctx, |ui| {
             let (r, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
             ui.painter().rect_filled(r, CornerRadius::ZERO, t.smoke);
             if resp.clicked() {
-                done = true;
+                result = Some(false);
             }
         });
-        egui::Area::new(egui::Id::new("delete-dialog")).anchor(Align2::CENTER_CENTER, Vec2::ZERO).order(egui::Order::Foreground).show(ctx, |ui| {
+        egui::Area::new(egui::Id::new("content-dialog")).anchor(Align2::CENTER_CENTER, Vec2::ZERO).order(egui::Order::Foreground).show(ctx, |ui| {
             egui::Frame::new()
                 .fill(if t.dark { Color32::from_gray(43) } else { Color32::WHITE })
                 .stroke(Stroke::new(1.0, t.control_stroke))
@@ -719,10 +932,9 @@ impl LibraryApp {
                 .show(ui, |ui| {
                     ui.set_width(420.0);
                     egui::Frame::new().inner_margin(Margin::same(24)).show(ui, |ui| {
-                        let n = paths.len();
-                        ui.label(theme::subtitle(if n == 1 { "Delete this clip?".to_string() } else { format!("Delete {n} clips?") }).color(t.text));
+                        ui.label(theme::subtitle(title).color(t.text));
                         ui.add_space(8.0);
-                        ui.label(RichText::new("They move to the Recycle Bin, so you can restore them.").color(t.text2));
+                        body(ui);
                     });
                     egui::Frame::new()
                         .fill(if t.dark { Color32::from_gray(32) } else { Color32::from_gray(243) })
@@ -731,33 +943,110 @@ impl LibraryApp {
                         .show(ui, |ui| {
                             ui.columns(2, |cols| {
                                 let w = cols[0].available_width();
-                                let del = egui::Button::new(RichText::new("Delete").color(t.on_accent)).fill(t.accent).stroke(Stroke::NONE);
-                                if cols[0].add_sized(Vec2::new(w, theme::CONTROL_H), del).clicked() {
-                                    if self.editor.as_ref().is_some_and(|e| paths.iter().any(|p| p == e.path())) {
-                                        self.editor = None;
-                                        self.page = Page::Clips;
-                                    }
-                                    if crate::sys::shell::recycle(&paths) {
-                                        self.shared.toast(format!("Moved {} clip(s) to the Recycle Bin.", paths.len()), false);
-                                    } else {
-                                        self.shared.toast("The clip could not be deleted. Is it open in another program?", true);
-                                    }
-                                    self.checked.clear();
-                                    done = true;
+                                let b = egui::Button::new(RichText::new(primary).color(t.on_accent)).fill(t.accent).stroke(Stroke::NONE);
+                                if cols[0].add_sized(Vec2::new(w, theme::CONTROL_H), b).clicked() {
+                                    result = Some(true);
                                 }
                                 if cols[1].add_sized(Vec2::new(w, theme::CONTROL_H), egui::Button::new("Cancel")).clicked() {
-                                    done = true;
+                                    result = Some(false);
                                 }
                             });
                         });
                 });
         });
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            done = true;
+        ctx.input(|i| {
+            if i.key_pressed(egui::Key::Escape) {
+                result = Some(false);
+            } else if i.key_pressed(egui::Key::Enter) && result.is_none() {
+                result = Some(true);
+            }
+        });
+        result
+    }
+
+    fn delete_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let Some(paths) = self.confirm_delete.clone() else { return };
+        let n = paths.len();
+        let title = if n == 1 { "Delete this clip?".to_string() } else { format!("Delete {n} clips?") };
+        let Some(ok) = Self::content_dialog(ctx, t, &title, "Delete", |ui| {
+            ui.label(RichText::new("They move to the Recycle Bin, so you can restore them.").color(t.text2));
+        }) else {
+            return;
+        };
+        if ok {
+            if self.editor.as_ref().is_some_and(|e| paths.iter().any(|p| p == e.path())) {
+                self.editor = None;
+                self.page = Page::Clips;
+            }
+            if crate::sys::shell::recycle(&paths) {
+                self.shared.toast(format!("Moved {n} clip(s) to the Recycle Bin."), false);
+                self.lib = crate::library::Library::load();
+                for p in &paths {
+                    self.lib.forget(p);
+                }
+                let _ = self.lib.save();
+            } else {
+                self.shared.toast("The clip could not be deleted. Is it open in another program?", true);
+            }
+            self.checked.clear();
         }
-        if done {
-            self.confirm_delete = None;
-            self.rescan(ctx);
+        self.confirm_delete = None;
+        self.rescan(ctx);
+    }
+
+    /// Rename and tag dialogs.
+    fn clip_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let Some(dialog) = &mut self.dialog else { return };
+        let (title, primary) = match dialog {
+            ClipDialog::Rename(..) => ("Rename clip", "Rename"),
+            ClipDialog::Tags(..) => ("Tags", "Save"),
+        };
+        let result = Self::content_dialog(ctx, t, title, primary, |ui| match dialog {
+            ClipDialog::Rename(_, name) => {
+                ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).margin(Margin::symmetric(10, 7))).request_focus();
+            }
+            ClipDialog::Tags(_, text) => {
+                ui.label(RichText::new("Separate tags with commas or spaces, for example: clutch, funny").color(t.text2));
+                ui.add_space(8.0);
+                ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY).hint_text("clutch, funny").margin(Margin::symmetric(10, 7)))
+                    .request_focus();
+            }
+        });
+        let Some(ok) = result else { return };
+        let dialog = self.dialog.take().expect("open");
+        if !ok {
+            return;
+        }
+        match dialog {
+            ClipDialog::Rename(path, name) => match crate::library::rename_clip(&path, &name) {
+                Ok(new) => {
+                    self.lib = crate::library::Library::load();
+                    if let Some(url) = self.shared.uploads.remove(path.to_string_lossy().as_ref()) {
+                        self.shared.uploads.insert(new.to_string_lossy().into_owned(), url);
+                    }
+                    let in_editor = self.editor.as_ref().is_some_and(|e| e.path() == path);
+                    if in_editor {
+                        self.editor = None;
+                        if self.page == Page::Editor {
+                            self.open_editor(ctx, new.clone());
+                        }
+                    }
+                    self.thumbs.remove(&path);
+                    self.thumb_requested.remove(&path);
+                    if self.checked.remove(&path) {
+                        self.checked.insert(new);
+                    }
+                    self.rescan(ctx);
+                }
+                Err(e) => self.shared.toast(format!("Could not rename: {e}"), true),
+            },
+            ClipDialog::Tags(path, text) => {
+                self.lib = crate::library::Library::load();
+                self.lib.update(&path, |m| m.tags = crate::library::parse_tags(&text));
+                if let Err(e) = self.lib.save() {
+                    self.shared.toast(format!("Could not save: {e}"), true);
+                }
+            }
         }
     }
 }
@@ -813,6 +1102,7 @@ impl eframe::App for LibraryApp {
         self.selection_bar(&ctx, &t, content_rect);
         self.info_bars(&ctx, &t);
         self.delete_dialog(&ctx, &t);
+        self.clip_dialog(&ctx, &t);
     }
 
     /// Opaque window background, so nothing behind the window shows through.

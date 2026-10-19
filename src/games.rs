@@ -23,6 +23,9 @@ pub struct GameRecord {
     /// True while the recorder has an active recording for it.
     #[serde(default)]
     pub recording: bool,
+    /// True while a full session recording of it runs.
+    #[serde(default)]
+    pub capturing: bool,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
@@ -84,6 +87,7 @@ impl GameDb {
                 first_seen: now,
                 last_seen: now,
                 recording: false,
+                capturing: false,
             }),
         }
     }
@@ -95,6 +99,19 @@ impl GameDb {
             let on = exes.contains(&g.exe);
             if g.recording != on {
                 g.recording = on;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Marks exactly these executables as having a session recording.
+    pub fn set_capturing(&mut self, exes: &[String]) -> bool {
+        let mut changed = false;
+        for g in &mut self.games {
+            let on = exes.contains(&g.exe);
+            if g.capturing != on {
+                g.capturing = on;
                 changed = true;
             }
         }
@@ -133,10 +150,13 @@ pub fn note_detected(exe: &str, name: &str, path: &str, how: &str) {
     db.save();
 }
 
-/// Recorder side: publishes which games are recording right now.
-pub fn note_recording(exes: &[String]) {
+/// Recorder side: publishes which games are buffering right now, and which
+/// have a session recording.
+pub fn note_recording(exes: &[String], capturing: &[String]) {
     let mut db = GameDb::load();
-    if db.set_recording(exes) {
+    let a = db.set_recording(exes);
+    let b = db.set_capturing(capturing);
+    if a || b {
         db.save();
     }
 }

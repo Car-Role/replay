@@ -44,11 +44,16 @@ impl AudioOptions {
 
 /// Builds the file name `<dir>\<Game>\<Game> 2026-10-18 21-05-33.mp4`.
 pub fn clip_path(output_dir: &Path, game: &str) -> PathBuf {
+    clip_path_with(output_dir, game, "")
+}
+
+/// Like `clip_path`, with `suffix` after the time (for example " (session)").
+pub fn clip_path_with(output_dir: &Path, game: &str, suffix: &str) -> PathBuf {
     let t = crate::util::local_time();
     let game = crate::util::sanitize_file_name(game);
     let dir = output_dir.join(&game);
     let stem = format!(
-        "{game} {:04}-{:02}-{:02} {:02}-{:02}-{:02}",
+        "{game} {:04}-{:02}-{:02} {:02}-{:02}-{:02}{suffix}",
         t.year, t.month, t.day, t.hour, t.minute, t.second
     );
     let mut p = dir.join(format!("{stem}.mp4"));

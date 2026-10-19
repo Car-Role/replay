@@ -9,6 +9,7 @@ pub mod detect;
 pub mod encoder;
 pub mod gpu;
 pub mod net;
+pub mod overlay;
 pub mod player;
 pub mod secret;
 pub mod session;

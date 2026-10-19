@@ -51,15 +51,17 @@ pub struct Session {
     pub video: Arc<Mutex<PacketRing>>,
     pub video_state: Arc<Mutex<VideoState>>,
     pub game_audio: Option<Arc<Mutex<PacketRing>>>,
+    /// Seconds a saved replay of this game holds.
+    pub replay_seconds: u32,
     pub ended: Option<Instant>,
     stop: Arc<AtomicBool>,
     tx: Sender<Msg>,
     threads: Vec<JoinHandle<()>>,
 }
 
-pub fn ring_for(cfg: &Config, kbps: u32) -> PacketRing {
+pub fn ring_for(replay_seconds: u32, kbps: u32) -> PacketRing {
     // Keep one extra GOP plus margin so a full-length clip is always available.
-    let secs = i64::from(cfg.replay_seconds) + 2;
+    let secs = i64::from(replay_seconds) + 2;
     let bytes = (u64::from(kbps) * 1000 / 8) * (secs as u64 + 3) * 5 / 4;
     PacketRing::new(secs * TICKS_PER_SEC, bytes as usize)
 }
@@ -86,7 +88,7 @@ impl Session {
             // this GOP is only the fallback for encoders that ignore that.
             gop: (v.fps * 2).max(1),
         };
-        let video = Arc::new(Mutex::new(ring_for(cfg, v.peak_kbps())));
+        let video = Arc::new(Mutex::new(ring_for(cfg.replay_seconds, v.peak_kbps())));
         let video_state = Arc::new(Mutex::new(VideoState {
             codec: v.codec,
             width: out_size.0,
@@ -136,7 +138,7 @@ impl Session {
         );
 
         let game_audio = cfg.audio.game_audio.then(|| {
-            let ring = Arc::new(Mutex::new(ring_for(cfg, cfg.audio.bitrate_kbps)));
+            let ring = Arc::new(Mutex::new(ring_for(cfg.replay_seconds, cfg.audio.bitrate_kbps)));
             let (r, s, kbps) = (ring.clone(), stop.clone(), cfg.audio.bitrate_kbps);
             threads.push(
                 std::thread::Builder::new()
@@ -147,8 +149,8 @@ impl Session {
             ring
         });
 
-        log::info!("recording {} ({}, pid {pid}) at {}x{}", game.name, game.exe, out_size.0, out_size.1);
-        Self { game, video, video_state, game_audio, ended: None, stop, tx, threads }
+        log::info!("recording {} ({}, pid {pid}) at {}x{} {} fps", game.name, game.exe, out_size.0, out_size.1, v.fps);
+        Self { game, video, video_state, game_audio, replay_seconds: cfg.replay_seconds, ended: None, stop, tx, threads }
     }
 
     pub fn is_running(&self) -> bool {

@@ -150,6 +150,7 @@ pub fn send_to_recorder(msg: crate::ipc::RecorderMsg) -> bool {
         RecorderMsg::InstallUpdate => (crate::app::WM_APP_INSTALL_UPDATE, 0),
         RecorderMsg::Save(all) => (crate::app::WM_APP_SAVE, usize::from(all)),
         RecorderMsg::Show => (crate::app::WM_APP_SHOW, 0),
+        RecorderMsg::Record => (crate::app::WM_APP_SAVE, 2),
     };
     unsafe {
         match FindWindowW(crate::app::WINDOW_CLASS, None) {
