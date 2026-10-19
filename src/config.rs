@@ -89,6 +89,8 @@ pub struct VideoConfig {
     pub bitrate_kbps: u32,
     pub rate_control: RateControl,
     pub capture_cursor: bool,
+    /// On HDR monitors, convert to normal colors (otherwise clips look washed out).
+    pub hdr_to_sdr: bool,
 }
 
 impl Default for VideoConfig {
@@ -100,6 +102,7 @@ impl Default for VideoConfig {
             bitrate_kbps: 25_000,
             rate_control: RateControl::Vbr,
             capture_cursor: false,
+            hdr_to_sdr: true,
         }
     }
 }

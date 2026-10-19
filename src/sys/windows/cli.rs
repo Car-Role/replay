@@ -53,6 +53,9 @@ pub fn handle(mode: &str, args: &[String]) -> bool {
             let secs = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(8);
             let codec = args.get(2).map(String::as_str).filter(|a| !a.starts_with("--"));
             let webcam = args.iter().any(|a| a == "--webcam");
+            if args.iter().any(|a| a == "--hdr") {
+                crate::hdr::FORCE.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             std::process::exit(if selftest(secs, codec, webcam) { 0 } else { 1 });
         }
         "--verify" => {

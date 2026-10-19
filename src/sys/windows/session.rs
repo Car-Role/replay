@@ -104,9 +104,14 @@ impl Session {
         let (tx, rx) = mpsc::channel();
         let mut threads = Vec::new();
 
+        let hdr = if v.hdr_to_sdr { crate::hdr::monitor_hdr(crate::hdr::monitor_of(target)) } else { None };
+        if let Some(w) = hdr {
+            log::info!("{}: HDR monitor; converting to SDR (white {:.2})", game.name, w);
+        }
         let worker = VideoWorker {
             gpu,
             target,
+            hdr,
             settings,
             cursor: v.capture_cursor,
             webcam: webcam.map(|w| (w, cfg.webcam.corner, cfg.webcam.size)),
@@ -192,6 +197,8 @@ impl Drop for Session {
 struct VideoWorker {
     gpu: Arc<Gpu>,
     target: Target,
+    /// Some(SDR white) when capturing HDR, which is tone-mapped to SDR.
+    hdr: Option<f32>,
     settings: EncoderSettings,
     cursor: bool,
     /// The webcam, its corner and its height in percent.
@@ -231,6 +238,7 @@ impl VideoWorker {
             target,
             self.settings.fps,
             self.cursor,
+            self.hdr.is_some(),
             move |f| {
                 let _ = tf.send(Msg::Frame(f));
             },
@@ -252,6 +260,10 @@ impl VideoWorker {
             let _ = tx.send(Msg::Enc(e));
         })?;
         let mut capture = self.start_capture(self.target)?;
+        let mut tonemap = match self.hdr {
+            Some(_) => Some(crate::hdr::ToneMapper::new(&self.gpu.device)?),
+            None => None,
+        };
         let started = Instant::now();
         let mut switched_to_monitor = false;
 
@@ -331,6 +343,10 @@ impl VideoWorker {
                         continue; // Faster than the target rate.
                     }
                     let tex = frame.texture()?;
+                    let tex = match (&mut tonemap, self.hdr) {
+                        (Some(tm), Some(white)) => tm.map(&tex, white)?,
+                        _ => tex,
+                    };
                     let mut desc = Default::default();
                     unsafe { tex.GetDesc(&mut desc) };
                     let content = frame.content_size()?;

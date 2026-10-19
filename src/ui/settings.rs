@@ -175,6 +175,9 @@ impl SettingsPage {
         theme::setting(ui, t, icons, None, "Show the mouse cursor", "Draw the pointer into clips", |ui| {
             theme::toggle(ui, t, &mut d.video.capture_cursor);
         });
+        theme::setting(ui, t, icons, None, "HDR games", "When Windows HDR is on, convert to normal colors so clips look right on every screen", |ui| {
+            theme::toggle(ui, t, &mut d.video.hdr_to_sdr);
+        });
     }
 
     fn storage(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {

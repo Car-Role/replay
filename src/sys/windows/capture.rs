@@ -31,6 +31,7 @@ pub struct Capture {
     session: GraphicsCaptureSession,
     _item: GraphicsCaptureItem,
     size: SizeInt32,
+    format: DirectXPixelFormat,
     gpu_device: windows::Graphics::DirectX::Direct3D11::IDirect3DDevice,
 }
 
@@ -73,6 +74,7 @@ impl Capture {
         target: Target,
         fps: u32,
         cursor: bool,
+        hdr: bool,
         on_frame: impl Fn(Frame) + Send + 'static,
         on_closed: impl Fn() + Send + 'static,
     ) -> Result<Self> {
@@ -84,12 +86,9 @@ impl Capture {
             }
         };
         let size = item.Size()?;
-        let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
-            &gpu.winrt_device,
-            DirectXPixelFormat::B8G8R8A8UIntNormalized,
-            POOL_BUFFERS,
-            size,
-        )?;
+        // HDR monitors: 16-bit float scRGB, tone-mapped later.
+        let format = if hdr { DirectXPixelFormat::R16G16B16A16Float } else { DirectXPixelFormat::B8G8R8A8UIntNormalized };
+        let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(&gpu.winrt_device, format, POOL_BUFFERS, size)?;
         pool.FrameArrived(&TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |pool, _| {
             if let Some(pool) = pool.as_ref()
                 && let Ok(frame) = pool.TryGetNextFrame()
@@ -118,7 +117,7 @@ impl Capture {
             log::debug!("SetMinUpdateInterval: {e}");
         }
         session.StartCapture()?;
-        Ok(Self { pool, session, _item: item, size, gpu_device: gpu.winrt_device.clone() })
+        Ok(Self { pool, session, _item: item, size, format, gpu_device: gpu.winrt_device.clone() })
     }
 
     /// Resizes the pool when the source size changes.
@@ -127,7 +126,7 @@ impl Capture {
             return Ok(false);
         }
         self.size = SizeInt32 { Width: w as i32, Height: h as i32 };
-        self.pool.Recreate(&self.gpu_device, DirectXPixelFormat::B8G8R8A8UIntNormalized, POOL_BUFFERS, self.size)?;
+        self.pool.Recreate(&self.gpu_device, self.format, POOL_BUFFERS, self.size)?;
         Ok(true)
     }
 }

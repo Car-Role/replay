@@ -8,6 +8,7 @@ pub mod cli;
 pub mod detect;
 pub mod encoder;
 pub mod gpu;
+pub mod hdr;
 pub mod net;
 pub mod overlay;
 pub mod player;
