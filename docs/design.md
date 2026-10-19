@@ -20,6 +20,7 @@ the best clip apps (Medal, SteelSeries Moments, Steam game recording, Windows Ph
 ## Structure
 
 - **Navigation:** Clips (home), Games. Settings pinned at the bottom. The capture status sits above it.
+  No brand row: the window's title bar already shows the icon and name.
   Labels show from 1008 px wide; below that the rail shows icons only.
 - **Clips:** thumbnails are the home screen. A search box, filter chips and a sort/group menu sit above
   the grid. Clips group by day (default) or by game. Selecting clips shows a floating command bar.

@@ -247,7 +247,6 @@ pub struct LibraryApp {
     thumb_requested: HashSet<PathBuf>,
     editor: Option<Editor>,
     settings: settings::SettingsPage,
-    logo: TextureHandle,
     recorder_running: bool,
     recorder_checked: Instant,
     games: crate::games::GameDb,
@@ -288,8 +287,6 @@ impl LibraryApp {
         let (job_tx, job_rx) = mpsc::channel();
         let cfg = Config::load();
         let uploads = std::fs::read_to_string(uploads_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-        let logo_img = egui::ColorImage::from_rgba_unmultiplied([64, 64], include_bytes!("../../assets/generated/icon-64.rgba"));
-        let logo = ctx.load_texture("logo", logo_img, egui::TextureOptions::LINEAR);
         let mut app = Self {
             page: match start {
                 "settings" => Page::Settings,
@@ -307,7 +304,6 @@ impl LibraryApp {
             thumb_rx,
             thumb_requested: HashSet::new(),
             editor: None,
-            logo,
             recorder_running: crate::sys::shell::recorder_running(),
             // Check at once, so stale "recording" flags never show.
             recorder_checked: Instant::now() - Duration::from_secs(3),
@@ -498,16 +494,9 @@ impl LibraryApp {
 
     fn nav(&mut self, ui: &mut egui::Ui, t: &Tokens, compact: bool) {
         let icons = self.shared.icons;
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.add_space(if compact { 14.0 } else { 16.0 });
-            ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(self.logo.id(), Vec2::splat(20.0))));
-            if !compact {
-                ui.add_space(4.0);
-                ui.label(theme::body_strong("Replay").color(t.text));
-            }
-        });
-        ui.add_space(16.0);
+        // The window's title bar already shows the icon and "Replay", so the
+        // pane starts with its first item (as in Windows Settings).
+        ui.add_space(8.0);
         ui.spacing_mut().item_spacing.y = 4.0;
         let on_clips = matches!(self.page, Page::Clips | Page::Editor);
         if theme::nav_item(ui, t, icons, icon::LIBRARY, "Clips", on_clips, compact).clicked() {
