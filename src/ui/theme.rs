@@ -175,6 +175,8 @@ pub mod icon {
     pub const PLAY: char = '\u{E768}';
     pub const PAUSE: char = '\u{E769}';
     pub const BACK: char = '\u{E72B}';
+    pub const FULLSCREEN: char = '\u{E740}';
+    pub const EXIT_FULLSCREEN: char = '\u{E73F}';
     pub const CUT: char = '\u{E8C6}';
     pub const COPY: char = '\u{E8C8}';
     pub const UPLOAD: char = '\u{E898}';

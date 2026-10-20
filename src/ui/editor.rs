@@ -137,6 +137,10 @@ pub struct Editor {
     warned: bool,
     /// The warning just appeared: scroll Save as into view once.
     reveal_save: bool,
+    /// Full-screen playback: only the video and auto-hiding controls.
+    pub fullscreen: bool,
+    /// Last pointer movement in full screen (the controls show for 2.5 s).
+    moved_at: Instant,
     /// The warning just appeared on an untrimmed clip: fold Trim once.
     fold_trim: bool,
     /// Peak level (0..1) per slice of the clip, for the waveform strip.
@@ -242,6 +246,8 @@ impl Editor {
             footer_h: 112.0,
             warned: false,
             reveal_save: false,
+            fullscreen: false,
+            moved_at: Instant::now(),
             fold_trim: false,
             waveform: Vec::new(),
             name_edit: None,
@@ -273,6 +279,12 @@ impl Editor {
     /// For `--snapshot`: show the vertical export with its crop frame.
     pub fn snapshot_vertical(&mut self) {
         self.vertical = true;
+    }
+
+    /// For `--snapshot`: full-screen playback, paused so the controls show.
+    pub fn snapshot_fullscreen(&mut self) {
+        self.vertical = false;
+        self.set_fullscreen(true);
     }
 
     /// For `--snapshot`: a long clip squeezed into 10 MB, which warns.
@@ -403,7 +415,7 @@ impl Editor {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
-        let (space, i, o, left, right, shift, home, end) = ctx.input(|inp| {
+        let (space, i, o, left, right, shift, home, end, f) = ctx.input(|inp| {
             (
                 inp.key_pressed(Key::Space),
                 inp.key_pressed(Key::I),
@@ -413,8 +425,12 @@ impl Editor {
                 inp.modifiers.shift,
                 inp.key_pressed(Key::Home),
                 inp.key_pressed(Key::End),
+                inp.key_pressed(Key::F),
             )
         });
+        if f {
+            self.set_fullscreen(!self.fullscreen);
+        }
         if space {
             let p = !self.playing;
             self.set_playing(p);
@@ -449,6 +465,10 @@ impl Editor {
         let icons = shared.icons;
         self.pump(&ctx);
         self.keyboard(&ctx);
+        if self.fullscreen && self.error.is_none() {
+            self.theater(ui, &t, icons);
+            return None;
+        }
         let mut action = self.command_bar(ui, &t, icons, shared, favorite);
         ui.add_space(8.0);
         if let Some(e) = &self.error {
@@ -648,6 +668,128 @@ impl Editor {
         action
     }
 
+    pub fn set_fullscreen(&mut self, on: bool) {
+        self.fullscreen = on;
+        self.moved_at = Instant::now();
+    }
+
+    /// Full-screen playback: the video on black, with a seek bar, play and
+    /// exit that hide 2.5 s after the pointer stops while playing.
+    fn theater(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool) {
+        let ctx = ui.ctx().clone();
+        let rect = ui.max_rect();
+        let resp = ui.allocate_rect(rect, Sense::click());
+        let p = ui.painter_at(rect);
+        p.rect_filled(rect, CornerRadius::ZERO, Color32::BLACK);
+        if let Some(tex) = &self.texture {
+            let (vw, vh) = (tex.size()[0] as f32, tex.size()[1] as f32);
+            let scale = (rect.width() / vw).min(rect.height() / vh);
+            let img = Rect::from_center_size(rect.center(), Vec2::new(vw * scale, vh * scale));
+            p.image(tex.id(), img, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+        }
+        if ctx.input(|i| i.pointer.delta() != Vec2::ZERO || i.pointer.any_down()) {
+            self.moved_at = Instant::now();
+        }
+        let show = !self.playing || self.moved_at.elapsed() < Duration::from_millis(2500);
+        if resp.double_clicked() {
+            self.set_fullscreen(false);
+            return;
+        }
+        if resp.clicked() {
+            let on = !self.playing;
+            self.set_playing(on);
+        }
+        if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.set_fullscreen(false);
+            return;
+        }
+        if !show {
+            ctx.set_cursor_icon(egui::CursorIcon::None);
+            return;
+        }
+        ctx.request_repaint_after(Duration::from_millis(250));
+
+        // Scrim, so the controls read on any picture.
+        let bar_h = 132.0;
+        let bar = Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - bar_h), rect.max);
+        let steps = 24;
+        for i in 0..steps {
+            let a = (i as f32 / steps as f32).powf(1.6) * 0.75;
+            let y0 = bar.top() + bar.height() * i as f32 / steps as f32;
+            let band = Rect::from_min_max(Pos2::new(bar.left(), y0), Pos2::new(bar.right(), y0 + bar.height() / steps as f32 + 1.0));
+            p.rect_filled(band, CornerRadius::ZERO, Color32::from_black_alpha((a * 255.0) as u8));
+        }
+
+        // Seek bar over the whole clip, with the trim selection lighter.
+        let dur = self.duration.max(0.001);
+        let track = Rect::from_min_max(Pos2::new(rect.left() + 32.0, rect.bottom() - 84.0), Pos2::new(rect.right() - 32.0, rect.bottom() - 80.0));
+        let x_of = |s: f64| track.left() + (s / dur).clamp(0.0, 1.0) as f32 * track.width();
+        let hit = ui.interact(track.expand2(Vec2::new(0.0, 12.0)), ui.id().with("theater-seek"), Sense::click_and_drag());
+        if let Some(m) = hit.interact_pointer_pos()
+            && (hit.dragged() || hit.clicked() || hit.drag_started())
+        {
+            if self.playing {
+                self.set_playing(false);
+            }
+            let s = ((m.x - track.left()) / track.width()).clamp(0.0, 1.0) as f64 * dur;
+            self.scrub(s);
+        }
+        if hit.drag_stopped() {
+            let c = self.cursor;
+            self.seek(c);
+        }
+        let hot = hit.hovered() || hit.dragged();
+        let thick = if hot { 6.0 } else { 4.0 };
+        let track = Rect::from_center_size(track.center(), Vec2::new(track.width(), thick));
+        p.rect_filled(track, CornerRadius::same(2), Color32::from_white_alpha(60));
+        let sel = Rect::from_min_max(Pos2::new(x_of(self.in_point), track.top()), Pos2::new(x_of(self.out_point), track.bottom()));
+        p.rect_filled(sel, CornerRadius::same(2), Color32::from_white_alpha(110));
+        let head = x_of(self.cursor);
+        p.rect_filled(Rect::from_min_max(track.min, Pos2::new(head, track.bottom())), CornerRadius::same(2), t.accent);
+        p.circle_filled(Pos2::new(head, track.center().y), if hot { 8.0 } else { 6.0 }, t.accent);
+        if hot {
+            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+
+        // Play, time, and exit on one row.
+        let row_y = rect.bottom() - 40.0;
+        let play = Rect::from_center_size(Pos2::new(rect.left() + 52.0, row_y), Vec2::splat(40.0));
+        let pr = ui.interact(play, ui.id().with("theater-play"), Sense::click());
+        p.circle_filled(play.center(), 20.0, Color32::from_white_alpha(if pr.hovered() { 40 } else { 24 }));
+        if icons {
+            let g = if self.playing { icon::PAUSE } else { icon::PLAY };
+            p.text(play.center(), Align2::CENTER_CENTER, g, FontId::new(16.0, FontFamily::Name(theme::ICONS.into())), Color32::WHITE);
+        } else {
+            draw_play(&p, play.center(), 7.0, Color32::WHITE);
+        }
+        theme::focus_ring(ui, t, &pr, play, 20.0);
+        if pr.on_hover_text(if self.playing { "Pause (Space)" } else { "Play (Space)" }).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            let on = !self.playing;
+            self.set_playing(on);
+        }
+        p.text(
+            Pos2::new(play.right() + 16.0, row_y),
+            Align2::LEFT_CENTER,
+            format!("{}  /  {}", theme::fmt_time(self.cursor), theme::fmt_time(self.duration)),
+            FontId::proportional(14.0),
+            Color32::WHITE,
+        );
+        let exit = Rect::from_center_size(Pos2::new(rect.right() - 52.0, row_y), Vec2::splat(40.0));
+        let er = ui.interact(exit, ui.id().with("theater-exit"), Sense::click());
+        if er.hovered() {
+            p.rect_filled(exit, CornerRadius::same(theme::R_CONTROL), Color32::from_white_alpha(30));
+        }
+        if icons {
+            p.text(exit.center(), Align2::CENTER_CENTER, icon::EXIT_FULLSCREEN, FontId::new(16.0, FontFamily::Name(theme::ICONS.into())), Color32::WHITE);
+        } else {
+            p.text(exit.center(), Align2::CENTER_CENTER, "\u{00d7}", FontId::proportional(20.0), Color32::WHITE);
+        }
+        theme::focus_ring(ui, t, &er, exit, f32::from(theme::R_CONTROL));
+        if er.on_hover_text("Exit full screen (Esc)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            self.set_fullscreen(false);
+        }
+    }
+
     /// The video, aspect-fit on black. Click to play or pause; in vertical
     /// mode, drag to move the 9:16 crop.
     fn preview(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, rect: Rect) -> bool {
@@ -696,6 +838,9 @@ impl Editor {
         if resp.clicked() {
             let on = !self.playing;
             self.set_playing(on);
+        }
+        if resp.double_clicked() && !self.vertical {
+            self.set_fullscreen(true);
         }
         if !self.playing && self.drag.is_none() && resp.hovered() && !self.vertical {
             let c = rect.center();
@@ -768,6 +913,12 @@ impl Editor {
         if theme::subtle(u, theme::label_with_icon(icons, icon::SKIP_FWD, if icons { "" } else { ">|" })).on_hover_text("Go to end (End)").clicked() {
             let o = self.out_point;
             go(self, o);
+        }
+        let fs = Rect::from_min_size(Pos2::new(r.right() - 32.0, r.center().y - 16.0), Vec2::splat(32.0));
+        let mut fu = ui.new_child(egui::UiBuilder::new().max_rect(fs).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        let glyph = if icons { theme::glyph(icon::FULLSCREEN, 16.0) } else { RichText::new("\u{26f6}") };
+        if theme::icon_button(&mut fu, t, glyph, "Full screen").on_hover_text("Full screen (F)").clicked() {
+            self.set_fullscreen(true);
         }
         let _ = mono;
     }

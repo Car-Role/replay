@@ -22,6 +22,7 @@ enum Step {
     Editor,
     EditorVertical,
     EditorSmall,
+    EditorFullscreen,
     Games,
     GameDetail,
     SettingsGeneral,
@@ -37,7 +38,7 @@ enum Step {
     Empty,
 }
 
-const STEPS: [(Step, &str); 20] = [
+const STEPS: [(Step, &str); 21] = [
     (Step::Clips, "01-clips"),
     (Step::TileHover, "01b-tile-hover-on-star"),
     (Step::ClipsByGame, "02-clips-by-game"),
@@ -45,6 +46,7 @@ const STEPS: [(Step, &str); 20] = [
     (Step::Editor, "04-editor"),
     (Step::EditorVertical, "05-editor-vertical"),
     (Step::EditorSmall, "05b-editor-10mb-warning"),
+    (Step::EditorFullscreen, "05c-editor-fullscreen"),
     (Step::Games, "06-games"),
     (Step::GameDetail, "07-game"),
     (Step::SettingsGeneral, "08-settings-general"),
@@ -160,6 +162,9 @@ impl LibraryApp {
         self.gallery.checked.clear();
         self.gallery.filter.clear();
         self.gallery.group = super::clips::Group::Day;
+        if let Some(ed) = &mut self.editor {
+            ed.set_fullscreen(false);
+        }
         let first_clip = self.clips.first().map(|c| c.path.clone());
         match step {
             Step::Clips | Step::TileHover => self.page = Page::Clips,
@@ -178,6 +183,12 @@ impl LibraryApp {
             Step::EditorVertical => {
                 if let Some(ed) = &mut self.editor {
                     ed.snapshot_vertical();
+                }
+                self.page = Page::Editor;
+            }
+            Step::EditorFullscreen => {
+                if let Some(ed) = &mut self.editor {
+                    ed.snapshot_fullscreen();
                 }
                 self.page = Page::Editor;
             }

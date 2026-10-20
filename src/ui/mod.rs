@@ -237,6 +237,8 @@ const UNDO_TIME: Duration = Duration::from_secs(6);
 
 pub struct LibraryApp {
     page: Page,
+    /// The window is in full screen for the clip player.
+    window_fullscreen: bool,
     shared: Shared,
     job_rx: Receiver<(usize, JobDone)>,
     clips: Vec<ClipEntry>,
@@ -316,6 +318,7 @@ impl LibraryApp {
             pending_delete: None,
             game_open: None,
             snapshot: None,
+            window_fullscreen: false,
             seen_before: seen_marker(),
         };
         app.rescan(&ctx);
@@ -1124,6 +1127,18 @@ impl eframe::App for LibraryApp {
             }
         }
 
+        // Full-screen playback: the window follows the player (never in
+        // snapshot mode, which must not take over the screen).
+        let theater = self.page == Page::Editor && self.editor.as_ref().is_some_and(|e| e.fullscreen);
+        if theater != self.window_fullscreen && self.snapshot.is_none() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(theater));
+        }
+        self.window_fullscreen = theater;
+        if theater {
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(egui::Color32::BLACK)).show(ui, |ui| self.editor_page(ui));
+            return;
+        }
+
         // NavigationView: labels from 1008 px wide, icons only below.
         let compact = ctx.content_rect().width() < 1008.0;
         egui::Panel::left("nav")
@@ -1182,7 +1197,10 @@ impl LibraryApp {
         };
         let fav = self.lib.is_favorite(ed.path());
         match ed.ui(ui, &mut self.shared, fav) {
-            Some(editor::Action::Back) => self.page = Page::Clips,
+            Some(editor::Action::Back) => {
+                ed.set_fullscreen(false);
+                self.page = Page::Clips;
+            }
             Some(editor::Action::Delete(p)) => self.delete_clips(vec![p]),
             Some(editor::Action::Favorite(p, on)) => self.set_favorite(&p, on),
             Some(editor::Action::SaveCrop(p, c)) => {
