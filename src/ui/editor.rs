@@ -141,6 +141,9 @@ pub struct Editor {
     pub fullscreen: bool,
     /// Last pointer movement in full screen (the controls show for 2.5 s).
     moved_at: Instant,
+    /// Listening volume (percent) and mute; preview only, kept between clips.
+    volume: u32,
+    muted: bool,
     /// The warning just appeared on an untrimmed clip: fold Trim once.
     fold_trim: bool,
     /// Peak level (0..1) per slice of the clip, for the waveform strip.
@@ -248,6 +251,8 @@ impl Editor {
             reveal_save: false,
             fullscreen: false,
             moved_at: Instant::now(),
+            volume: ctx.data(|d| d.get_temp::<(u32, bool)>(listen_id())).map_or(100, |v| v.0),
+            muted: ctx.data(|d| d.get_temp::<(u32, bool)>(listen_id())).is_some_and(|v| v.1),
             fold_trim: false,
             waveform: Vec::new(),
             name_edit: None,
@@ -343,10 +348,11 @@ impl Editor {
         {
             self.audio_rx = None;
             match r {
-                Ok(tracks) if tracks.game.is_some() || tracks.mic.is_some() => {
+                Ok(tracks) if tracks.game.is_some() || tracks.mic.is_some() || tracks.voice.is_some() => {
                     self.waveform = waveform(&tracks);
                     let a = AudioOut::start(tracks);
                     a.set_gains(self.game_gain, self.mic_gain, self.voice_gain);
+                    a.set_volume(self.heard_volume());
                     a.seek(self.cursor);
                     a.set_playing(self.playing);
                     self.audio = Some(a);
@@ -414,6 +420,15 @@ impl Editor {
     fn keyboard(&mut self, ctx: &egui::Context) {
         if ctx.egui_wants_keyboard_input() {
             return;
+        }
+        let (up, down, mute) = ctx.input(|inp| (inp.key_pressed(Key::ArrowUp), inp.key_pressed(Key::ArrowDown), inp.key_pressed(Key::M)));
+        if up || down {
+            let v = if up { self.volume + 10 } else { self.volume.saturating_sub(10) };
+            self.set_volume(ctx, v.min(100), false);
+        }
+        if mute {
+            let m = !self.muted;
+            self.set_volume(ctx, self.volume, m);
         }
         let (space, i, o, left, right, shift, home, end, f) = ctx.input(|inp| {
             (
@@ -676,6 +691,53 @@ impl Editor {
         action
     }
 
+    /// The volume the speaker hears (0 when muted).
+    fn heard_volume(&self) -> u32 {
+        if self.muted { 0 } else { self.volume }
+    }
+
+    fn set_volume(&mut self, ctx: &egui::Context, volume: u32, muted: bool) {
+        // Raising the volume unmutes, as in any media player.
+        self.muted = muted && volume > 0 || volume == 0;
+        self.volume = volume;
+        if let Some(a) = &self.audio {
+            a.set_volume(self.heard_volume());
+        }
+        ctx.data_mut(|d| d.insert_temp(listen_id(), (self.volume, self.muted)));
+    }
+
+    /// Speaker (click to mute) and a slider, in a `w` by 32 px rect.
+    fn volume_control(&mut self, ui: &mut egui::Ui, t: &Tokens, icons: bool, rect: Rect, on_video: bool) {
+        let ctx = ui.ctx().clone();
+        let icon_r = Rect::from_min_size(Pos2::new(rect.left(), rect.center().y - 16.0), Vec2::splat(32.0));
+        let ir = ui.interact(icon_r, ui.id().with(("volume-icon", on_video)), Sense::click());
+        let fg = if on_video { Color32::WHITE } else { t.text };
+        if ir.hovered() {
+            let fill = if on_video { Color32::from_white_alpha(30) } else { t.subtle_hover };
+            ui.painter().rect_filled(icon_r, CornerRadius::same(theme::R_CONTROL), fill);
+        }
+        let g = if self.heard_volume() == 0 { icon::MUTE } else { icon::VOLUME };
+        if icons {
+            ui.painter().text(icon_r.center(), Align2::CENTER_CENTER, g, FontId::new(16.0, FontFamily::Name(theme::ICONS.into())), fg);
+        } else {
+            ui.painter().text(icon_r.center(), Align2::CENTER_CENTER, if self.heard_volume() == 0 { "x" } else { "\u{266a}" }, FontId::proportional(16.0), fg);
+        }
+        theme::focus_ring(ui, t, &ir, icon_r, f32::from(theme::R_CONTROL));
+        let tip = if self.muted { "Unmute (M)" } else { "Mute (M)" };
+        if ir.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            let m = !self.muted;
+            let v = if !m && self.volume == 0 { 50 } else { self.volume };
+            self.set_volume(&ctx, v, m);
+        }
+        let sr = Rect::from_min_max(Pos2::new(icon_r.right() + 6.0, rect.top()), rect.max);
+        let mut su = ui.new_child(egui::UiBuilder::new().max_rect(sr).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        let mut v = self.heard_volume();
+        let resp = theme::slider(&mut su, t, &mut v, 0..=100, false, sr.width());
+        if resp.on_hover_text(format!("Volume {v}% (\u{2191} \u{2193})")).changed() {
+            self.set_volume(&ctx, v, v == 0);
+        }
+    }
+
     pub fn set_fullscreen(&mut self, on: bool) {
         self.fullscreen = on;
         self.moved_at = Instant::now();
@@ -783,6 +845,8 @@ impl Editor {
             Color32::WHITE,
         );
         let exit = Rect::from_center_size(Pos2::new(rect.right() - 52.0, row_y), Vec2::splat(40.0));
+        let vol = Rect::from_min_max(Pos2::new(exit.left() - 12.0 - 152.0, row_y - 16.0), Pos2::new(exit.left() - 12.0, row_y + 16.0));
+        self.volume_control(ui, t, icons, vol, true);
         let er = ui.interact(exit, ui.id().with("theater-exit"), Sense::click());
         if er.hovered() {
             p.rect_filled(exit, CornerRadius::same(theme::R_CONTROL), Color32::from_white_alpha(30));
@@ -921,6 +985,10 @@ impl Editor {
         if theme::subtle(u, theme::label_with_icon(icons, icon::SKIP_FWD, if icons { "" } else { ">|" })).on_hover_text("Go to end (End)").clicked() {
             let o = self.out_point;
             go(self, o);
+        }
+        let vol = Rect::from_min_max(Pos2::new(r.right() - 32.0 - 8.0 - 128.0, r.center().y - 16.0), Pos2::new(r.right() - 32.0 - 8.0, r.center().y + 16.0));
+        if vol.left() > controls.right() + 8.0 {
+            self.volume_control(ui, t, icons, vol, false);
         }
         let fs = Rect::from_min_size(Pos2::new(r.right() - 32.0, r.center().y - 16.0), Vec2::splat(32.0));
         let mut fu = ui.new_child(egui::UiBuilder::new().max_rect(fs).layout(egui::Layout::left_to_right(egui::Align::Center)));
@@ -1445,7 +1513,7 @@ fn section(ui: &mut egui::Ui, t: &Tokens, title: &str, open_default: bool, body:
 
 /// Peak level per slice of the clip (game and mic together), 0..1.
 fn waveform(tracks: &AudioTracks) -> Vec<f32> {
-    let len = tracks.game.as_ref().map_or(0, Vec::len).max(tracks.mic.as_ref().map_or(0, Vec::len));
+    let len = [&tracks.game, &tracks.mic, &tracks.voice].iter().map(|t| t.as_ref().map_or(0, Vec::len)).max().unwrap_or(0);
     if len == 0 {
         return Vec::new();
     }
@@ -1454,7 +1522,7 @@ fn waveform(tracks: &AudioTracks) -> Vec<f32> {
         .map(|b| {
             let range = b * per..((b + 1) * per).min(len);
             let peak = |v: &Option<Vec<i16>>| v.as_ref().map_or(0, |v| v.get(range.clone()).map_or(0, |s| s.iter().map(|x| x.unsigned_abs()).max().unwrap_or(0)));
-            f32::from(peak(&tracks.game).max(peak(&tracks.mic))) / 32768.0
+            f32::from(peak(&tracks.game).max(peak(&tracks.mic)).max(peak(&tracks.voice))) / 32768.0
         })
         .collect();
     // Scale so the loudest part fills the strip; quiet clips stay readable.
@@ -1522,4 +1590,9 @@ fn bubble(p: &egui::Painter, t: &Tokens, at: Pos2, text: &str) {
     let fill = if t.dark { Color32::from_gray(44) } else { Color32::from_gray(250) };
     p.rect(r, CornerRadius::same(theme::R_CONTROL), fill, Stroke::new(1.0, t.control_stroke), StrokeKind::Inside);
     p.galley(r.min + Vec2::new(6.0, 3.0), galley, t.text);
+}
+
+/// Where the listening volume is kept between clips (this window only).
+fn listen_id() -> egui::Id {
+    egui::Id::new("listen-volume")
 }

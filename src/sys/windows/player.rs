@@ -284,6 +284,8 @@ struct Shared {
     game_gain: AtomicU32,
     mic_gain: AtomicU32,
     voice_gain: AtomicU32,
+    /// Listening volume in percent (0 is muted); only the preview, not exports.
+    volume: AtomicU32,
     stop: AtomicBool,
 }
 
@@ -310,6 +312,7 @@ impl AudioOut {
             game_gain: AtomicU32::new(100),
             mic_gain: AtomicU32::new(100),
             voice_gain: AtomicU32::new(100),
+            volume: AtomicU32::new(100),
             stop: AtomicBool::new(false),
         });
         let s = shared.clone();
@@ -338,6 +341,11 @@ impl AudioOut {
         if let Ok(mut s) = self.shared.seek_to.lock() {
             *s = Some(f);
         }
+    }
+
+    /// How loud the preview plays, in percent (0 mutes). Exports ignore it.
+    pub fn set_volume(&self, percent: u32) {
+        self.shared.volume.store(percent, Ordering::Relaxed);
     }
 
     pub fn set_gains(&self, game: u32, mic: u32, voice: u32) {
@@ -414,13 +422,15 @@ fn render_loop(s: &Shared, tracks: &AudioTracks, total: u64) -> windows::core::R
                 let gg = s.game_gain.load(Ordering::Relaxed) as i32;
                 let mg = s.mic_gain.load(Ordering::Relaxed) as i32;
                 let vg = s.voice_gain.load(Ordering::Relaxed) as i32;
+                let lv = s.volume.load(Ordering::Relaxed) as i64;
                 let start = pos as usize * CHANNELS as usize;
                 for (k, o) in out.iter_mut().enumerate() {
                     let i = start + k;
                     let g = tracks.game.as_ref().and_then(|v| v.get(i)).copied().unwrap_or(0) as i32 * gg;
                     let m = tracks.mic.as_ref().and_then(|v| v.get(i)).copied().unwrap_or(0) as i32 * mg;
                     let c = tracks.voice.as_ref().and_then(|v| v.get(i)).copied().unwrap_or(0) as i32 * vg;
-                    *o = ((g + m + c) / 100).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                    let mixed = i64::from(g + m + c) * lv / 10_000;
+                    *o = mixed.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16;
                 }
                 render.ReleaseBuffer(n, 0)?;
                 pos += u64::from(n);

@@ -190,6 +190,7 @@ pub mod icon {
     pub const LINK: char = '\u{E71B}';
     pub const VIDEO: char = '\u{E714}';
     pub const VOLUME: char = '\u{E767}';
+    pub const MUTE: char = '\u{E74F}';
     pub const MIC: char = '\u{E720}';
     pub const PEOPLE: char = '\u{E716}';
     pub const BUG: char = '\u{EBE8}';
