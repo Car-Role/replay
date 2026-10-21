@@ -533,6 +533,17 @@ impl SettingsPage {
                 crate::sys::shell::open_url("https://car-role.github.io/replay/");
             }
         });
+        theme::setting(ui, t, false, Some(icon::BUG), "Troubleshooting", "Copy details for a bug report: Windows, graphics card, audio devices, settings and recent warnings. No clips or file names", |ui| {
+            if theme::button(ui, "Copy system info", true).clicked() {
+                let cfg = shared.cfg.clone();
+                shared.spawn_job(ui.ctx(), super::JobKind::Report, "Collecting system info".into(), move |_| {
+                    super::JobDone::CopiedText(format!("```\n{}```", crate::report::system(&cfg)), "System info copied. Paste it into your bug report.".into())
+                });
+            }
+            if ui.link("Open log folder").clicked() {
+                crate::sys::shell::open_path(&crate::paths::data_dir());
+            }
+        });
         let d = &mut self.draft;
         theme::setting(ui, t, false, Some(icon::UPDATE), "Automatic updates", "Check once a day and download new versions in the background", |ui| {
             theme::toggle(ui, t, &mut d.updates.auto_check);

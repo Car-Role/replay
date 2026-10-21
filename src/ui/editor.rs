@@ -646,6 +646,14 @@ impl Editor {
                         crate::sys::shell::reveal(&self.path);
                         ui.close();
                     }
+                    if ui.button("Copy clip report").on_hover_text("Audio levels, clipping and dropouts of each track, for a bug report").clicked() {
+                        let p = self.path.clone();
+                        shared.spawn_job(&ctx, super::JobKind::Report, "Checking the clip".into(), move |_| match crate::report::clip(&p) {
+                            Ok(text) => super::JobDone::CopiedText(format!("```\n{text}```"), "Clip report copied. Paste it into your bug report.".into()),
+                            Err(e) => super::JobDone::Failed(format!("Could not check the clip: {e}")),
+                        });
+                        ui.close();
+                    }
                     ui.separator();
                     if ui.button(RichText::new("Delete").color(t.critical)).clicked() {
                         action = Some(Action::Delete(self.path.clone()));

@@ -125,6 +125,8 @@ pub enum JobKind {
     Export,
     Upload,
     Update,
+    /// System info or a clip report for a bug report.
+    Report,
 }
 
 pub struct Job {
@@ -141,6 +143,8 @@ pub enum JobDone {
     ExportedCopied(PathBuf, bool),
     Uploaded(PathBuf, String),
     Update(settings::UpdateState),
+    /// Text for the clipboard, and the toast that says so.
+    CopiedText(String, String),
     Failed(String),
 }
 
@@ -432,6 +436,10 @@ impl LibraryApp {
                         self.shared.toast(format!("Replay {v} is ready. Restart from Settings > About."), false);
                     }
                     self.settings.update = state;
+                }
+                JobDone::CopiedText(text, msg) => {
+                    let ok = crate::sys::shell::copy_text(&text);
+                    self.shared.toast(if ok { msg } else { "Could not use the clipboard.".into() }, !ok);
                 }
                 JobDone::Failed(e) => self.shared.toast(e, true),
             }

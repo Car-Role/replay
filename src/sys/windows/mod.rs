@@ -15,6 +15,7 @@ pub mod player;
 pub mod secret;
 pub mod session;
 pub mod shell;
+pub mod sysinfo;
 pub mod transcode;
 pub mod tray;
 pub mod verify;
@@ -23,6 +24,8 @@ pub mod webcam;
 use crate::config::Codec;
 
 pub const PLATFORM: &str = "windows";
+
+pub use sysinfo::system_report;
 
 /// AAC through the Media Foundation encoder and decoder.
 pub mod aac {

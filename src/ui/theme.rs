@@ -192,6 +192,7 @@ pub mod icon {
     pub const VOLUME: char = '\u{E767}';
     pub const MIC: char = '\u{E720}';
     pub const PEOPLE: char = '\u{E716}';
+    pub const BUG: char = '\u{EBE8}';
     pub const GAME: char = '\u{E7FC}';
     pub const KEYBOARD: char = '\u{E765}';
     pub const SHARE: char = '\u{E72D}';

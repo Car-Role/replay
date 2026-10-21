@@ -271,6 +271,42 @@ pub struct Timeline {
     enc: AacEncoder,
     ring: Arc<Mutex<PacketRing>>,
     silence: Vec<i16>,
+    /// Faults inside a running stream, logged once a minute for bug reports.
+    faults: Faults,
+}
+
+/// Gaps filled with silence and overlaps dropped while sound was flowing.
+/// Silence after the source stops (a game going quiet) is not counted.
+#[derive(Default)]
+struct Faults {
+    label: &'static str,
+    gaps: u32,
+    gap_ms: f64,
+    drops: u32,
+    drop_ms: f64,
+    /// Silence was filled because nothing arrived (the source went quiet).
+    quiet: bool,
+    since: Option<std::time::Instant>,
+}
+
+impl Faults {
+    fn report(&mut self) {
+        let since = *self.since.get_or_insert_with(std::time::Instant::now);
+        if since.elapsed() < Duration::from_secs(60) {
+            return;
+        }
+        if self.gaps > 0 || self.drops > 0 {
+            log::warn!(
+                "{}: {} gaps filled with silence ({:.0} ms), {} overlaps dropped ({:.0} ms) in the last minute",
+                self.label,
+                self.gaps,
+                self.gap_ms,
+                self.drops,
+                self.drop_ms
+            );
+        }
+        *self = Self { label: self.label, quiet: self.quiet, since: Some(std::time::Instant::now()), ..Self::default() };
+    }
 }
 
 fn frames_to_ticks(f: u64) -> Ticks {
@@ -282,8 +318,9 @@ fn ticks_to_frames(t: Ticks) -> u64 {
 }
 
 impl Timeline {
-    pub fn new(bitrate_kbps: u32, ring: Arc<Mutex<PacketRing>>) -> Result<Self> {
-        Ok(Self { base: None, fed: 0, emitted: 0, enc: AacEncoder::new(bitrate_kbps)?, ring, silence: Vec::new() })
+    pub fn new(bitrate_kbps: u32, ring: Arc<Mutex<PacketRing>>, label: &'static str) -> Result<Self> {
+        let faults = Faults { label, ..Faults::default() };
+        Ok(Self { base: None, fed: 0, emitted: 0, enc: AacEncoder::new(bitrate_kbps)?, ring, silence: Vec::new(), faults })
     }
 
     fn next_time(&self) -> Option<Ticks> {
@@ -322,10 +359,20 @@ impl Timeline {
             return self.feed(pcm);
         };
         let drift = at - next;
+        let flowing = !std::mem::take(&mut self.faults.quiet);
+        self.faults.report();
         if drift > GAP_TOLERANCE {
+            if flowing {
+                self.faults.gaps += 1;
+                self.faults.gap_ms += drift as f64 / (TICKS_PER_SEC as f64 / 1000.0);
+            }
             self.feed_silence(ticks_to_frames(drift.min(MAX_FILL)))?;
         } else if drift < -GAP_TOLERANCE {
             // We are ahead (silence was filled while this data was in flight): drop the overlap.
+            if flowing {
+                self.faults.drops += 1;
+                self.faults.drop_ms += -drift as f64 / (TICKS_PER_SEC as f64 / 1000.0);
+            }
             let skip = ticks_to_frames(-drift) as usize * CHANNELS as usize;
             if skip >= pcm.len() {
                 return Ok(());
@@ -339,6 +386,7 @@ impl Timeline {
     pub fn idle(&mut self, now: Ticks) -> Result<()> {
         let Some(next) = self.next_time() else { return Ok(()) };
         if now - next > SILENCE_AFTER {
+            self.faults.quiet = true;
             self.feed_silence(ticks_to_frames((now - SILENCE_SLACK - next).min(MAX_FILL)))?;
         }
         Ok(())
@@ -482,7 +530,7 @@ pub fn run(source: Source, bitrate_kbps: u32, ring: Arc<Mutex<PacketRing>>, stop
     let mut task = 0;
     let mmcss = unsafe { AvSetMmThreadCharacteristicsW(w!("Audio"), &mut task) }.ok();
 
-    let mut timeline = match Timeline::new(bitrate_kbps, ring) {
+    let mut timeline = match Timeline::new(bitrate_kbps, ring, label) {
         Ok(t) => t,
         Err(e) => {
             log::error!("AAC encoder unavailable: {e}");
@@ -524,6 +572,7 @@ pub fn run(source: Source, bitrate_kbps: u32, ring: Arc<Mutex<PacketRing>>, stop
 
 fn capture_loop(s: &Stream, timeline: &mut Timeline, pcm: &mut Vec<i16>, stop: &AtomicBool) -> Result<()> {
     let mut polls = 0u32;
+    let mut clock_logged = false;
     while !stop.load(Ordering::Acquire) {
         // About every 2 s: a followed app that closed ends the stream, so it
         // is found again (and the track stays silent meanwhile).
@@ -558,6 +607,10 @@ fn capture_loop(s: &Stream, timeline: &mut Timeline, pcm: &mut Vec<i16>, stop: &
             }
             unsafe { s.capture.ReleaseBuffer(frames)? };
             // The QPC position is already in 100 ns units.
+            if !clock_logged {
+                clock_logged = true;
+                log::info!("{}: {}", timeline.faults.label, if qpc != 0 { "device timestamps" } else { "no device timestamps, using arrival time" });
+            }
             let at = if qpc != 0 { qpc as Ticks } else { crate::util::now_ticks() };
             timeline.push(at, pcm)?;
         }

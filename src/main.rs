@@ -12,6 +12,7 @@ mod media;
 mod mux;
 mod paths;
 mod record;
+mod report;
 mod ring;
 mod share;
 mod sys;
@@ -80,6 +81,27 @@ fn main() {
             logger::init("probe", false);
             sys::init_tool();
             std::process::exit(if edit_cli(mode, &args) { 0 } else { 1 });
+        }
+        "--report" => {
+            // replay --report <clip>: tracks, levels, clipping and dropouts.
+            logger::init("probe", false);
+            sys::init_tool();
+            let Some(clip) = args.get(1) else {
+                println!("usage: replay --report <clip>");
+                std::process::exit(1);
+            };
+            match report::clip(std::path::Path::new(clip)) {
+                Ok(text) => print!("{text}"),
+                Err(e) => {
+                    println!("cannot read {clip}: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "--sysinfo" => {
+            logger::init("probe", false);
+            sys::init_tool();
+            print!("{}", report::system(&config::Config::load()));
         }
         "--check-update" => {
             logger::init("probe", false);

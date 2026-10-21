@@ -78,6 +78,8 @@ Needs Rust 1.88+ and the MSVC build tools. The showcase video lives in [`video/`
 | `replay --selftest [s] [--webcam] [--hdr]` | Record the screen and check the result |
 | `replay --snapshot [dir] [--scale 1.5]` | Render every library page to PNG, off-screen |
 | `replay --check-update` | Download and verify the newest release |
+| `replay --sysinfo` | System, GPU, audio device and settings report for bug reports |
+| `replay --report <clip>` | Each track of a clip: levels, clipping and dropouts |
 
 Set `REPLAY_HOME` to keep settings and data in another folder (demos and tests).
 

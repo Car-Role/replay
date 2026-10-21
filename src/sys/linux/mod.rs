@@ -122,3 +122,10 @@ pub mod cli {
         crate::sys::unix::app::run(Box::new(LinuxBackend { detector: detect::Detector::new() }));
     }
 }
+
+/// System lines for bug reports (Linux: the kernel only for now).
+pub fn system_report(_mic: &str) -> String {
+    let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    format!("Linux {}
+", kernel.trim())
+}
